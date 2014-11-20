@@ -1,0 +1,69 @@
+##################################################################################################
+INSTALLATION
+
+This program is intended to be used by root
+Simply copy the cleanpkgfile script to someplace in the root's PATH
+and make sure it's executable:
+  chmod +x cleanpkfile
+  cp cleanpkgfile /usr/sbin
+
+##################################################################################################
+CONFIGURATION
+
+You can write a configuration file (there should be a sample one included with the program)
+and place it in one of three locations (listed in order of precedence):
+  ~/.config/cleanpkgfile/cleanpkgfile.conf
+  ~/.cleanpkgfile.conf
+  /etc/cleanpkgfile.conf
+Inside, you can set default values for all supported command-line options in the form of:
+<long option name> = <value>
+where value can be 1, true, 0 or false for boolean options or any string (including empty string by quoting it) for other options.
+You can also write simply <long option name> to set a boolean option to true (do not use instead of empty string).
+Configuration options are overridden by command line switches.
+
+##################################################################################################
+COMMAND LINE OPTIONS
+
+--check        -c        Specify the type of the package atom's arguments - 'use', 'keyword', 'env', 'guess' or
+                         'none' (default) . Note that this affects behaviour for ALL input files - use 'guess'
+			 to guess check from filename/path (useful when specifying multiple files of differenttype),
+			 use the others only if ALL input files are of the specified type.
+
+--debug        -D        Makes a lot of noise on STDOUT. Use only if you want to report a bug (or debug yourself).
+
+--help         -h        Print this help message and exit.
+
+--tmp-dir      -d        Directory in which the temporary file will be stored before overwrite (default is /tmp).
+                         If set to '' (with --tmp-dir=), the directory of the currently processed file will be used.
+
+--verbose      -v        Print information about every entry being processed (off by default). Disable with --no-verbose.
+
+If not specified, path defaults to /etc/portage/
+If you want to clean package in the current directory, use cleanpkgfile <options> ./file
+If file's name begins with -, use cleanpkgfile <options> -- file
+
+##################################################################################################
+EXAMPLES
+
+To verbosely process package.accept_keywords, package.use and package.env and their flags/keywords/files:
+  cleanpkgfile -vcguess package.accept_keywords package.use package.env
+or if your shell supports brace expansion and globbing:
+  cleanpkgfile -vcguess package.{*keywords,use,env}
+
+
+To only remove atoms from package.use, which don't match any installed version:
+  cleanpkgfile -vcnone package.use
+
+
+cleanpkgfile will ignore any commented lines.
+If you want to exclude certain non-commented entries from being processed,
+put them inside an #IGNORE# block, like so:
+
+#IGNORE#
+
+# this is for multilib purposes, the following packages are not currently merged,
+# but if/when they do get pulled in the USE flag should be enabled
+app-admin/gamin abi_x86_32
+sys-libs/e2fsprogs-libs abi_x86_32
+
+#IGNORE#
