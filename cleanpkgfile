@@ -1,0 +1,1171 @@
+#!/usr/bin/perl
+#
+##################################################################################################
+# Copyright 2014 Aleksandrina Nikolova <infinite.craziness@gmail.com>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+##################################################################################################
+#
+# A script to "clean" package.* files:
+#   joins entries referring to the same package-version(s),
+#   removes duplicate and invalid USE flags, keywords, env files; sorts them, etc.
+#   commented lines are ignored
+#   ignores lines between matching '#IGNORE#' lines
+
+use Getopt::Long qw{:config gnu_compat no_auto_abbrev no_ignore_case_always bundling permute pass_through};
+use POSIX ();
+use File::Basename;
+use File::Find::Rule;
+use File::Spec::Functions qw(catdir catfile);
+use Term::ANSIColor;
+
+sub load_config (;$);
+sub process_cmd;
+sub check_options (;$);
+sub usage;
+sub file_preprocess ($);
+sub file_process ($);
+
+sub get_atom_props ($);
+sub is_installed ($);
+sub get_atom_args (;$);
+sub check_atom_args ($);
+sub version_or_slot_matches ($);
+sub version_or_slot_equals ($);
+sub get_lower_version ($$);
+sub remove_dups ($;$);
+
+sub not_installed ($);
+sub no_use ($);
+sub invalid_arg ($);
+sub printl ($);
+sub printr ($);
+sub printdbg;
+sub prompt ($);
+
+our $DEBUG = 0;			# INTERNAL
+our $name = basename $0;
+our $verbose = 0;
+our $check = '';
+our $tmp_dir = '/tmp/';
+our $help_str = "See $name --help";
+our $left_column_width = 22;	# width of left column
+our $tab_width = 3;		# separation of left and right columns
+our $right_column_width = 85;	# width of right column
+
+##################################################################################################
+############################################## MAIN ##############################################
+##################################################################################################
+
+##################################################################################################
+{
+  local %options = (
+		    help	=> {
+				    long		=> "help",
+				    short		=> "h",
+				    argument		=> "",
+				    allowed_arguments	=> [],
+				    description		=> "Print this help message and exit.",
+				    variable		=> \&usage
+				   },
+		    debug	=> {
+				    long		=> "debug",
+				    short		=> "D",
+				    argument		=> "",
+				    allowed_arguments	=> [],
+				    description		=> "Makes a lot of noise on STDOUT. " .
+				    "Use only if you want to report a bug (or debug yourself).",
+				    variable		=> \$DEBUG
+				   },
+		    verbose	=> {
+				    long		=> "verbose",
+				    short		=> "v",
+				    argument		=> "!",
+				    allowed_arguments	=> [],
+				    description		=> "Print information about every entry " .
+				    "being processed (off by default). Disable with --no-verbose.",
+				    variable		=> \$verbose
+				   },
+		    check	=> {
+				    long		=> "check",
+				    short		=> "c",
+				    argument		=> "=s",
+				    allowed_arguments	=> ['use', 'keyword', 'env', 'guess', 'none', ''],
+				    description		=> "Specify the type of the package " .
+				    "atom's arguments - 'use', 'keyword', 'env', 'guess' or " .
+				    "'none' (default) . Note that this affects behaviour for " .
+				    "ALL input files - use 'guess' to guess check from filename" .
+				    "/path (useful when specifying multiple files of different" .
+				    "type), use the others only if ALL input files are of the " .
+				    "specified type.",
+				    variable		=> \$check
+				   },
+		    tmp_dir	=> {
+				    long		=> "tmp-dir",
+				    short		=> "d",
+				    argument		=> "=s",
+				    allowed_arguments	=> [],
+				    description		=> "Directory in which the temporary " .
+				    "file will be stored before overwrite (default is /tmp). " .
+				    "If set to '' (with --tmp-dir=), the directory of the " .
+				    "currently processed file will be used.",
+				    variable		=> \$tmp_dir
+				   }
+		    );
+
+  
+  # load configuration
+  {
+    my %opts = %options{grep { $_ !~ m/^(help|debug)$/ } keys %options};
+    load_config \%opts;
+  }
+  
+  # process command line
+  process_cmd;
+}
+
+# make sure filename (and no other arguments after option processing) has been specified
+die "Please specify at least one filename.\n$help_str\n" unless @ARGV;
+printdbg "files: @ARGV";
+$check = '' if $check eq 'none';
+
+##################################################################################################
+for my $file ( @ARGV ) {
+  # make sure tmp_dir is valid and is writable
+  $tmp_dir = $tmp_dir || dirname "$file";
+  die "No such directory: $tmp_dir\n$help_str\n" unless -d $tmp_dir;
+  die "Cannot write to $tmp_dir, check directory permissions.\n"
+    unless -x $tmp_dir && -r $tmp_dir && -w $tmp_dir;
+  
+  # make sure file exists and is readable
+  next unless length $file;
+  $file = "/etc/portage/$file" unless $file =~ m|/|;
+  printdbg "tmp_dir: $tmp_dir", "file: $file", "verbose: $verbose", "check: $check", "\n";
+  unless ( -f $file ) {
+    print STDERR color ('bold red');
+    print STDERR "No such file: $file\n$help_str\n";
+    print STDERR color ('reset');
+    next;
+  }
+  
+  my @processed_lines;
+  my @ignored_lines;
+  local $check = $check;
+  if ( $check eq 'guess' ) {
+    $check = 'use' if $file =~ m/use/;
+    $check = 'keywords' if $file =~ m/keywords/;
+    $check = 'env' if $file =~ m/env/;
+    $check = '' if $check eq 'guess';
+  }
+  local $arg_type;
+  $arg_type = 'USE flag' if $check eq 'use';
+  $arg_type = 'keyword' if $check eq 'keywords';
+  $arg_type = 'env file' if $check eq 'env';
+  
+  
+  file_preprocess ({
+		    filename		=> $file,
+		    processed_lines	=> \@processed_lines,
+		    ignored_lines	=> \@ignored_lines
+		   });
+  file_process ({
+		 filename		=> $file,
+		 processed_lines	=> \@processed_lines,
+		 ignored_lines		=> \@ignored_lines
+		});
+}
+
+exit 0;
+
+##################################################################################################
+######################################## MAIN SUBROUTINES ########################################
+##################################################################################################
+
+##################################################################################################
+# load a configuration file
+sub load_config (;$) {
+  my $opts = shift || \%options;
+  
+  my $config_file = catfile ( ( $ENV{XDG_CONFIG_HOME} || catdir ($ENV{HOME}, '.config') ),
+    $name, "$name.conf" );
+  $config_file = catfile ( $ENV{HOME}, ".$name.conf" ) unless -f $config_file;
+  $config_file = catfile ( '/etc/', "$name.conf" ) unless -f $config_file;
+  return unless -f $config_file;
+  
+  open CONF, $config_file or die "Cannot read $config_file. Check permissions\n";
+  while ( <CONF> ) {
+    chomp;
+    
+    for my $opt ( sort keys %$opts ) {
+      my $opt_desc = $$opts{$opt};
+      my $opt_value = $$opt_desc{variable};
+      
+      if ( $_ =~ m/^ \s* \Q$$opt_desc{long}\E \s*
+		   (?> = \s* (?:
+		       true | (?<false> false ) |
+		       (?<val> [^ ]+ ) |
+		       " (?<val> [^"]+ ) " |
+		       ' (?<val> [^']+ ) ' ) )?
+		   $ /x ) {
+	
+	if ( ref $opt_value eq 'SCALAR' ) {
+	  $$opt_value = ( $+{false} ? 0 : $+{val} || 1 );
+	}
+	
+	elsif ( ref $opt_value eq 'ARRAY' ) {
+	  push @$opt_value, $+{val};
+	}
+      }
+    }
+  }
+  
+  close CONF;
+  check_options "Invalid configuration $config_file";
+}
+
+##################################################################################################
+# process command line
+sub process_cmd {
+  my %opts;
+  for my $opt ( sort keys %options ) {
+    my $opt_desc = $options{$opt};
+    my $key = $$opt_desc{long} . ( $$opt_desc{short} ? "|$$opt_desc{short}" : "" ) .
+      $$opt_desc{argument};
+    $opts{$key} = $$opt_desc{variable}
+  }
+  
+  GetOptions %opts;
+
+  for ( @ARGV ) {
+    next if -f $_;
+    die "No such option $_\n$help_str\n" if $_ =~ m/^--/;
+    for my $opt ( sort keys %options ) {
+      my $opt_desc = $options{$opt};
+      die "Did you mean --$$opt_desc{long} ?\n$help_str\n"
+	if $_ eq '-' . ($$opt_desc{long} =~ s/^.//r);
+    }
+  }
+
+  check_options;
+  printdbg "tmp_dir: $tmp_dir", "files: @ARGV", "verbose: $verbose", "check: $check";
+}
+
+##################################################################################################
+# check for invalid option arguments
+sub check_options (;$) {
+  my $error = shift;
+  
+  OPT: for my $opt ( sort keys %options ) {
+    my $opt_desc = $options{$opt};
+    my $opt_value = $$opt_desc{variable};
+    my @allowed_values = @{$$opt_desc{allowed_arguments}} or next OPT;
+    
+    for my $allowed_value ( @allowed_values ) {
+      if ( ref $opt_value eq 'SCALAR' ) {
+	next OPT if $$opt_value eq $allowed_value;
+      }
+
+      elsif ( ref $opt_value eq 'ARRAY' ) {
+	for ( @$opt_value ) {
+	  next OPT if $_ eq $allowed_value;
+	}
+      }
+    }
+    
+    print "$error\n" if $error;
+    print "Invalid option value for $$opt_desc{long}: " .
+      "Choose one of @allowed_values\n";
+  }
+	
+}
+
+##################################################################################################
+# print usage and exit
+sub usage {
+  my $description = 'A script to "clean" package.* files:
+  - joins entries referring to the same package-version(s),
+  - removes duplicate and invalid USE flags, keywords, env files; sorts them, etc.
+  - commented lines are ignored
+  - also ignores lines between matching #IGNORE# lines';
+  
+  print "$description\n\n";
+  print color('bold'), "Usage: ";
+  print color('cyan'), $name;
+  print color('green'), " <options> [<path to files>]files";
+#  print color('cyan'), " [<path to files>]files";
+  print color('white'), "\n\nOptions:\n";
+  print color('reset');    
+  for my $opt ( sort keys %options ) {
+    my $opt_desc = $options{$opt};
+    printl ({
+	     text => "--$$opt_desc{long}",
+	     justify => 'left',
+	     left_column_width => ($left_column_width - 10)
+	    });
+    print (( $$opt_desc{short} ? "-$$opt_desc{short}" : "  " ) . " " x 8);
+    printr ({
+	     text => $$opt_desc{description},
+	     left_column_width => ($left_column_width + $tab_width)
+	    });
+    print "\n";
+  }    
+  print "\nIf not specified, path defaults to ";
+  print color('bold green'), "/etc/portage/\n";
+  print color('reset');
+  print "If you want to clean package in the current directory, use ";
+  print color('bold cyan'), "$name <options> ./file\n";
+  print color('reset');
+  print "If file's name begins with -, use ";
+  print color('bold cyan'), "$name <options> -- file\n";
+  print color('reset');
+  print "If found, a configuration file is read from " .
+    "~/.$name.conf, ~/.conf/$name/$name.conf or /etc/$name.conf\n";
+#  print "If you encounter a bug, use the -D option, save the output to a file and report.\n";
+  
+  exit 0;
+}
+
+##################################################################################################
+# read file and preprocess (sort and decide which lines to ignore)
+sub file_preprocess ($) {
+  my $file = ${$_[0]}{filename} or die;
+  my $lines = ${$_[0]}{processed_lines} or die;		# lines to be processed, default
+  my $lines_ignored = ${$_[0]}{ignored_lines} or die;	# lines to be ignored, i.e. inside an '#IGNORE#' block
+  
+  my @lines_preprocessed;				# lines to be preprocessed here, default
+  my $ignore = 0;					# true if inside an '#IGNORE#' block
+  
+  # open file for reading
+  unless ( open FILE, "<$file" ) {
+    print STDERR color ('bold red') . "Cannot read $file! Check permissions.\n" . color ('reset');
+    return;
+  }
+  
+  while ( <FILE> ) {
+    chomp;
+    printdbg "line preprocess: $_";
+    if ( $_ =~ m/^\s*#IGNORE#\s*$/ ) {
+      push @$lines_ignored, $_; # block delimiters are always stored as ignored lines
+      # toggle ignoring state
+      $ignore = $ignore ^ 1;
+      printdbg "ignore block " . ($ignore ? "begins" : "ends");
+      next;
+    }
+    
+    if ( $ignore ) {
+      push @$lines_ignored, $_;
+    } else {
+      push @lines_preprocessed, $_;
+    }
+  }
+  close FILE;
+  
+  # sort the original file ignoring any lines between matching '#IGNORE#' lines (saving them for later)
+  $, = "\n";
+  for ( sort {($a =~ s/^\s*(?:#\s*|[<>=~!]+)//r)
+		cmp ($b =~ s/^\s*(?:#\s*|[<>=~!]+)//r)}
+	map { chomp; $_ } @lines_preprocessed ) {
+    printdbg "\n", "line sort: $_";
+    # remove leading, trailing and extra spaces/tabs
+    $_ =~ s/^\s+|\s+$//g;
+    
+    # if it's the first element, or it is a comment, or it is a glob, store it and continue
+    if ( ! @$lines || $_ =~ m/^#/ ) {
+      printdbg "first or comment";
+      push @$lines, $_ ;
+      next;
+    }
+    
+    # otherwise, compare it with previous element, unless it was a comment
+    if ( $$lines[-1] =~ m/^#/ ) {
+      printdbg "previous line was a comment";
+      push @$lines, $_ ;
+      next;
+    }
+    ## join them if they refer to the same [prefix]package[-version]
+    my ($current, @args) = split /\s+/, $_;
+    my $previous = (split /\s+/, $$lines[-1])[0];
+    printdbg "current: $current";
+    printdbg "previous: $previous";
+    if ( $previous eq $current) {
+      $$lines[-1] .= " @args" if @args;
+      printdbg "joining as $$lines[-1]";
+      next;
+    }
+    
+    ## otherwise just store it
+    push @$lines, $_;
+  }
+  printdbg "\n", "Final lines to be further processed:";
+  printdbg $_ for @$lines;
+}
+
+##################################################################################################
+# main processing of file
+sub file_process ($) {
+  my $file = ${$_[0]}{filename} or die;
+  my $lines = ${$_[0]}{processed_lines} or die;		# lines to be processed, default
+  my $lines_ignored = ${$_[0]}{ignored_lines} or die;	# lines to be ignored, i.e. inside an '#IGNORE#' block
+  
+  # set tmp filename
+  my $filetmp = catfile ( $tmp_dir, basename "$file" . '_' .
+			  POSIX::strftime( "%b_%d_%Y_%H_%M_%S", localtime ) );
+
+  print color('bold cyan');
+  printl { text => "Processing file:" };
+  print $file;
+  printl { text => "Temporary file:" };
+  print $filetmp;
+  if ( $check ) {
+    printl { text => "Checking:" };
+    print "${arg_type}s";
+  }
+  print color('reset');
+  print "\n";
+  
+  # open filetmp for writing
+  open FILETMP, ">$filetmp" or die "Cannot write to $filetmp, check directory permissions.\n";
+  
+  # process all lines
+  for my $entry ( @$lines ) {
+    printdbg "\n", "line: $entry";
+    
+    # remove empty lines
+    if ( $entry =~ m/^$/ ) {
+      printdbg "empty";
+      next;
+    }
+
+    print "\n" if $verbose;
+    
+    # ignore commented lines
+    if ( $entry =~ m/^#/ ) {
+      if ( $verbose ) {
+	print color('bold', 'green');
+	printl { text => "Skipping commented line:" };
+	print $entry;
+	print color('reset');
+      }
+      printdbg "comment";
+      print FILETMP "$entry\n";
+      next;
+    }
+    
+    # get package atom properties
+    my ($atom, @args) = split /\s+/, $entry;
+    my $pkg = get_atom_props $entry;
+        
+    if ( $verbose ) {
+      printl { text => "Processing entry for:" };
+      print $$pkg{name};
+      printl { text => "Version listed is:" };
+      print $atom =~ s/\Q$$pkg{name}\E-?//r;
+    }
+    
+    unless ( $$pkg{name} =~ m|/| ) {
+      print STDERR color ('bold red');
+      print STDERR "Invalid entry for $atom - atoms must contain a category and package name! See ebuild(5)\n";
+      print STDERR  color ('reset');
+      next;
+    }
+    if ( length $$pkg{version} && ! length $$pkg{rule} ) {
+      print STDERR color ('bold red');
+      print STDERR "Invalid entry for $atom - atoms referring to a version must have a prefix! See ebuild(5)\n";
+      print STDERR  color ('reset');
+      next;
+    }
+    if ( length $$pkg{rule} && ! length $$pkg{version} ) {
+      print STDERR color ('bold red');
+      print STDERR "Invalid entry for $atom - atoms with prefix must refer to a version! See ebuild(5)\n";
+      print STDERR  color ('reset');
+      next;
+    }
+    
+    my $matching_versions = is_installed $pkg;
+    
+    unless ( $matching_versions ) {
+      not_installed $atom ;
+      next;
+    }
+    
+    unless ( $check ) {
+      print FILETMP "$entry\n";
+      next;
+    }
+    
+    # check use flags or keywords (if enabled)
+    my $matching_args = get_atom_args $matching_versions;
+    my $valid_args = check_atom_args ({
+				  args		=> \@args,
+				  matching_args	=> $matching_args,
+				  atom		=> $atom,
+				 });
+    
+    if ( $check eq 'use' && ! $valid_args ) {
+      no_use $atom;
+      next;
+    }
+    
+    if ( @$valid_args ) {
+      printl { text => "$atom", justify => 'left', out => FILETMP };
+      printr { text => "@$valid_args", right_column_width => 1000, out => FILETMP };
+      print FILETMP "\n";
+      next;
+    }
+    
+    print FILETMP "$atom\n";
+  }
+  
+  print FILETMP "\n" if @$lines_ignored;
+  print FILETMP "$_\n" for @$lines_ignored;
+  close FILETMP;
+  
+  print "\n";
+  print "\n" if $verbose;
+  unless ( $DEBUG ) {
+    my $in = prompt ({
+		      prompt		=> "Changes have been saved to $filetmp. Overwrite $file? (yes/no) ",
+		      prompt_invalid	=> "Please answer with yes (y) or no (n) "
+		     });
+    if ( $in =~ /y/ ) {
+      rename $filetmp, $file or print STDERR color ('bold red') .
+	"\nCannot overwrite $file. Check permissions.\n" . color ('reset');
+    }
+  }
+}
+
+##################################################################################################
+############################################# HELPERS ############################################
+##################################################################################################
+
+##################################################################################################
+# get atom prefix, package name, version, slot, subslot and USE flags/keywords/env files
+sub get_atom_props ($) {
+  my $entry = shift;
+  $entry =~ m!(?(DEFINE)
+		# matches a slot, subslot or vesion (excluding suffix) number
+		# with an optional * at the end
+		(?<version_glob> (?> \d+ (?> \.\d+ )* (?> \.?\* | [a-z] \*? )? | \* ) )
+		(?<slot_glob> (?> [a-z0-9_] [a-z0-9._-]* \*? | \* ) ) )
+
+	      ^(?<rule> \!? [<>]? [=~]? )				# atom prefix
+	      (?<name> [a-z0-9-*]+/[a-zA-Z0-9-_*]+? )			# category/name
+	      (?> - (?<full_version>					# full version
+		  (?<version> (?&version_glob) )			# version
+		  (?> (?<release>  _ (?: alpha | beta | pre | rc ) \d* ) )?  	# release
+		  (?> (?<patch>    _p \d+ ) )?				# patch
+		  (?> (?<revision> -r \d+ ) )?				# revision
+	      ) )?
+	      (?> :
+		(?<slot> (?&slot_glob) )				# slot number
+		(?> / (?<subslot> (?&slot_glob) ) )?			# subslot number (only if slot present)
+	      )?
+	      (?> :: (?<repository> .* ) )?				# repository
+	      (?> \s+ (?<args> .* ) )?					# anything following the atom
+	     $ !x;
+  printdbg "get_atom_props: rule: $+{rule} " .
+    "name: $+{name} " .
+      "version: $+{version} " .
+	"release: $+{release} " .
+	  "patch: $+{patch} " .
+	    "revision: $+{revision} " .
+	      "slot: $+{slot} " .
+		"subslot: $+{subslot} " .
+		  "repository $+{repository}";
+  printdbg "get_atom_props: " . scalar @{[split (' ', $+{args})]} .
+    " args: @{[split (' ', $+{args})]}";
+  
+  return {
+	  rule		=> $+{rule},
+	  name		=> $+{name},
+	  full_version	=> $+{full_version},
+	  version	=> $+{version},
+	  release	=> $+{release},
+	  patch		=> $+{patch},
+	  revision	=> $+{revision},
+	  slot		=> $+{slot},
+	  subslot	=> $+{subslot},
+	  repository	=> $+{repository},
+	  args		=> [split (' ', $+{args})]
+	 };
+}
+
+##################################################################################################
+# check if package is installed
+sub is_installed ($) {
+  my $pkg = shift;
+  my ( $rule, $name, $version, $slot, $subslot, $repository ) =
+    ( $$pkg{rule}, $$pkg{name}, $$pkg{full_version}, $$pkg{slot}, $$pkg{subslot}, $$pkg{repository} );
+  
+  # check if package is installed at all and discard it if not
+  my $db_dir = "/var/db/pkg/";
+  die "Cannot read $db_dir, check directory permissions.\n" unless -x $db_dir && -r $db_dir;
+  
+  my @installed_versions;
+  {
+    my ($category, $name) = split '/', $name;
+    printdbg "cat, name: $category, $name";
+    my @categories = File::Find::Rule
+      ->relative
+      ->maxdepth( 1 )
+      ->directory
+      ->name( $category )
+      ->in( $db_dir );
+    printdbg "matching categories: @categories";
+    for my $cat ( @categories ) {
+      my @matches = File::Find::Rule
+	->relative
+	->maxdepth( 1 )
+	->directory
+	->name( $name . '*' ) # needed because directory names contain the version at the end
+	->in( catdir ($db_dir, $cat) );
+      printdbg "matching names in $cat: @matches";
+      push @installed_versions, catdir ($cat, $_) for @matches;
+    }
+
+    # from all the found entries get only those whose name matches the listed one
+    # (unless it's a glob) for the category of the found entry
+    @installed_versions = grep { ${&get_atom_props($_)}{name} eq ($_ =~ s![^/]+$!!r) . $name }
+      @installed_versions unless $name =~ m/\*/;
+  }
+  
+  unless ( @installed_versions ) {
+    printdbg "not installed at all";
+    return;
+  }
+
+  my @matching_versions;
+  for ( @installed_versions) {
+    my ($installed_name, $installed_version) = @{&get_atom_props($_)}{name,version};
+    my $installed_repository;
+    
+    open SLOT, catfile ( $db_dir, $_, "SLOT" ) or die;
+    chomp (my ($installed_slot, $installed_subslot) = split '/', <SLOT>);
+    close SLOT;
+    $installed_subslot = $installed_subslot || $installed_slot;
+    
+    if ( $repository ) {
+      open REP, catfile ( $db_dir, $_, "repository" ) or die;
+      chomp ($installed_repository = <REP>);
+      close REP;
+    }
+    
+    printdbg "installed version: $installed_version:$installed_slot/$installed_subslot " .
+      "installed repository: $installed_repository";
+
+    # check that repository matches
+    if ( $repository && $repository ne $installed_repository ) {
+      printdbg "repository mismatch";
+      next;
+    }
+    
+    # check that version installed matches that listed
+    if ( length $version ) {
+      printdbg "comparing versions";
+      unless ( version_or_slot_matches ({
+					 listed		=> $version,
+					 installed	=> $installed_version,
+					 rule		=> $rule
+					}) ) {
+	printdbg "version mismatch $installed_version $rule $version";
+	next;
+      }
+    }
+    
+    # check that slot installed matches that listed
+    if ( length $slot ) {
+      printdbg "comparing slots";
+      unless ( version_or_slot_matches ({
+					 listed		=> $slot,
+					 installed	=> $installed_slot,
+					 rule		=> '='
+					}) ) {
+	printdbg "slot mismatch $installed_slot vs $slot";
+	next;
+      }
+    }
+    
+    # check that subslot installed matches that listed
+    if ( length $subslot ) {
+      printdbg "comparing subslots";
+      unless ( version_or_slot_matches ({
+					 listed		=> $subslot,
+					 installed	=> $installed_subslot,
+					 rule		=> '='
+					}) ) {
+	printdbg "subslot mismatch $installed_subslot vs $subslot";
+	next;
+      }
+    }
+    
+    push @matching_versions, $_;
+    printdbg "matched version: $_";
+  }
+  
+  return \@matching_versions if @matching_versions;
+  printdbg "failed to match";
+  return;
+}
+
+##################################################################################################
+# get valid arguments for a package version
+sub get_atom_args (;$) {
+  my $matching_versions = shift;
+  my @matching_args;
+  
+  if ( $check =~ m/^(use|keywords)$/ ) {
+    die unless $matching_versions;
+    my $db_dir = "/var/db/pkg/";
+    my $file;
+    $file = 'IUSE' if $check eq 'use';
+    $file = 'KEYWORDS' if $check eq 'keywords';
+    
+    for ( @$matching_versions ) {
+      if ( open ARGS, catfile ($db_dir, $_, $file) ) {
+	push @matching_args, split (' ', <ARGS>);
+	close ARGS;
+      }
+    }
+    
+    if ( $check eq 'use' ) {
+      $_ =~ s/^[+-]// for @matching_args; # remove + and - in front of USE flags
+    } elsif ( $check eq 'keywords' ) {
+      push @matching_args, '*';
+      push @matching_args, '**';
+      push @matching_args, '~*';
+    }
+    
+    remove_dups \@matching_args;
+    printdbg "matching version: $_" .
+      scalar @matching_args . " valid args: @matching_args";
+    
+  } elsif ( $check eq 'env' ) {
+    printdbg "getting env files";
+    opendir ENV, "/etc/portage/env" or return;
+    
+    @matching_args = grep { $_ !~ m/^\.\.?$/ } readdir ENV;
+    
+    closedir ENV
+  }
+
+  return \@matching_args;
+}
+
+##################################################################################################
+# check for valid use flags, keywords, env files
+sub check_atom_args ($) {
+  my $args = ${$_[0]}{args} or die;
+  my $matching_args = ${$_[0]}{matching_args} or die;
+  my $atom = ${$_[0]}{atom} or die;
+  
+  unless ( @$args ) {
+    printdbg "no args at all";
+    return;
+  }
+
+  my $arg_type = $arg_type;
+  unless ( $arg_type ) {
+    $arg_type = 'USE flag' if $check eq 'use';
+    $arg_type = 'keyword' if $check eq 'keywords';
+    $arg_type = 'env file' if $check eq 'env';
+  }
+  
+  if ( $verbose ) {
+    printl { text => "Valid ${arg_type}s:" };
+    printr { text => "@$matching_args" };
+    printl { text => "Listed ${arg_type}s:" };
+    printr { text => "@$args" };
+  }
+  
+  # check if args are valid
+  my @valid_args;
+ ARG: for ( @$args ) {
+    for my $valid_arg ( @$matching_args ) {
+      printdbg "$valid_arg vs $_";
+      if ( $_ eq $valid_arg ||
+	 ( $_ =~ m/^[+-]?\Q$valid_arg\E/ && $check eq 'use' ) ) {
+	printdbg "arg $_ is valid";
+	push @valid_args, $_;
+	next ARG;
+      }
+    }
+    printdbg "arg $_ is invalid";
+    invalid_arg ({
+		  arg		=> $_,
+		  arg_type	=> $arg_type,
+		  pkg_name	=> $atom,
+		  });
+  }
+
+  remove_dups \@valid_args, "\nContradicting ${arg_type}s: \%1, \%2 listed for " . $atom;
+  printdbg "valid args: @valid_args";
+  
+  unless ( @valid_args ) {
+    printdbg "no valid args";
+    return;
+  }
+  return \@valid_args;
+}
+
+##################################################################################################
+# check if version, slot or subslot in listed atom matches installed version,
+# slot or subslot (taking into account atom prefix)
+sub version_or_slot_matches ($) {
+  my $listed = ${$_[0]}{listed};
+  my $installed = ${$_[0]}{installed};
+  my $rule = ${$_[0]}{rule} or die;	# atom prefix
+  # negate the result if the atom prefix requires
+  my $match;
+  my $mismatch;
+  if ( $rule =~ m/!/ ) { $mismatch = 1; }
+  else { $match = 1; }
+  
+  printdbg "$listed vs $installed, rule is $rule";
+  return $match if $listed eq '*';	# any version, slot or subslot is accepted
+  
+  # check equality first, if acceptable in case of version numbers
+  if ( $rule =~ m/=/ ) {
+    return $match if
+      version_or_slot_equals ({
+			       listed		=> $listed,
+			       installed	=> $installed
+			      });
+  }
+  return $mismatch unless $rule =~ m/[><~]/;
+  
+  # NOTE: only version comparison should reach this point as slot numbers
+  # in atoms must be equal to installed ones
+  # if versions may or should not be equal, check precedence
+  # versionsort function provided by the eix package
+  
+  # if not and if any revision number is acceptable, try to equate base versions
+  if ( $rule =~ m/~/ ) {
+    printdbg "trying to equate base versions...";
+    $listed =~ s/-r\d+$//;
+    $installed =~ s/-r\d+$//;
+    return $match if
+      version_or_slot_equals ({
+			       listed		=> $listed,
+			       installed	=> $installed
+			      });
+  }
+  return $mismatch unless $rule =~ m/[><]/;
+  
+  # else, if acceptable, remove globs and check precedence of versions
+  printdbg "checking precedence of versions";
+  $listed =~ s/\.?\*.*//;
+  my $lower = get_lower_version $listed, $installed;
+  die unless $lower;
+  return $match if $rule =~ m/>/ && $listed eq $lower;
+  return $match if $rule =~ m/</ && $installed eq $lower;
+  return $mismatch;
+}
+
+##################################################################################################
+# check if installed version number equals listed one (taking into account globbing)
+sub version_or_slot_equals ($) {
+  my $listed = ${$_[0]}{listed};
+  my $installed = ${$_[0]}{installed};
+  printdbg "trying to equate...";
+  return 1 if $installed eq $listed; # exact equality
+  printdbg "  fail";
+  # if not, remove any possible globbing pattern and continue checks
+  if ( $listed =~ m/\*/ ) {
+    printdbg "glob pattern, trying to equate...";
+    $listed =~ s/\.?\*.*//;
+    return 1 if $installed =~ m/^\Q$listed\E/;
+    printdbg "  fail";
+  }
+  return;
+}
+
+##################################################################################################
+# return the lower of the two versions
+sub get_lower_version ($$) {
+  my $pkg1 = shift;
+  my $pkg2 = shift;
+  
+  # separate version parts, e.g. 4.3a_beta-r1 -> 4.3a, beta, r1
+  $v1 = get_atom_props "dummy/name-" . $pkg1;
+  $v2 = get_atom_props "dummy/name-" . $pkg2;
+  
+  # compare base version numbers
+  # optional letter following the version
+  {
+    my $base1 = $$v1{version};
+    my $base2 = $$v2{version};
+    my $base1_suff;
+    my $base2_suff;
+    if ( $base1 =~ s/([a-z])$// ) { $base1_suff = $1; }
+    if ( $base2 =~ s/([a-z])$// ) { $base2_suff = $1; }
+    printdbg "base comparison: $base1 vs $base2";
+    
+    while ( length $base1 || length $base2 ) {
+      my $base1_part;
+      my $base2_part;
+      if ( $base1 =~ s/^(\d+)\.?// ) { $base1_part = $1; }
+      if ( $base2 =~ s/^(\d+)\.?// ) { $base2_part = $1; }
+      
+      printdbg "base: $base1 vs $base2";
+      # any number > 0 is a higher version than none
+      return $pkg1 if $base2_part && ! $base1_part;
+      return $pkg2 if $base1_part && ! $base2_part;
+      
+      printdbg "base: $base1_part vs $base2_part";
+      return $pkg1 if $base1_part < $base2_part;
+      return $pkg2 if $base2_part < $base1_part;
+
+    }
+    printdbg "base suffix comparison: $base1_suff vs $base2_suff";
+    return $pkg1 if $base1_suff lt $base2_suff;
+    return $pkg2 if $base2_suff lt $base1_suff;
+  }
+
+  # if they're equal, compare releases
+  {
+    # precedence of releases
+    my @ordered_releases = ('alpha', 'beta', 'pre', 'rc', '' );
+    printdbg "release comparison part1: $$v1{release}, $$v2{release}";
+    
+    # any release is a lower version than none
+    return $pkg1 if $$v1{release} && ! $$v2{release};
+    return $pkg2 if $$v2{release} && ! $$v1{release};
+    
+    my ( $rel1_precedence ) = grep { $$v1{release} =~ m/^\Q$ordered_releases[$_]\E/ }
+      0 .. $#ordered_releases;
+    my ( $rel2_precedence ) = grep { $$v2{release} =~ m/^\Q$ordered_releases[$_]\E/ }
+      0 .. $#ordered_releases;
+    printdbg "$rel1_precedence vs $rel2_precedence";
+    
+    return $pkg1 if $rel1_precedence < $rel2_precedence;
+    return $pkg2 if $rel2_precedence < $rel1_precedence;
+
+    printdbg "release number comparison";
+    $release1_num = $$v1{release} =~ s/^[a-z]+//r;
+    $release2_num = $$v2{release} =~ s/^[a-z]+//r;
+    printdbg "release comparison part2: $release1_num, $release2_num";
+    
+    return $pkg1 if $release1_num < $release2_num;
+    return $pkg2 if $release2_num < $release1_num;
+  }
+
+  # if they're equal, compare patch numbers
+  {
+    printdbg "patch comparison part1: $$v1{patch}, $$v2{patch}";
+    # any patch is a higher version than none
+    return $pkg1 if $$v2{patch} && ! $$v1{patch};
+    return $pkg2 if $$v1{patch} && ! $$v2{patch};
+    
+    printdbg "patch number comparison";
+    $patch1_num = $$v1{patch} =~ s/^[a-z]+//r;
+    $patch2_num = $$v2{patch} =~ s/^[a-z]+//r;
+    printdbg "patch comparison part2: $patch1_num, $patch2_num";
+    
+    return $pkg1 if $patch1_num < $patch2_num;
+    return $pkg2 if $patch2_num < $patch1_num;
+  }
+  
+  # finally, if they're equal, compare revision numbers
+  {
+    printdbg "revision number comparison: $$v1{revision} vs $$v2{revision}";
+    return $pkg1 if $$v1{revision} < $$v2{revision};
+    return $pkg2 if $$v2{revision} < $$v1{revision};
+  }
+  
+  printdbg "equal";
+  return; # they're equal
+}
+
+##################################################################################################
+# sort and remove duplicate elements in array ignoring leading +/- (for USE flags)
+sub remove_dups ($;$) {
+  my $array = shift;
+  my $prompt = shift;
+  return $array if @$array < 2;
+  
+  @$array = sort {($a =~ s/^[+-]//r) cmp ($b =~ s/^[+-]//r)} @$array; # sort the elements
+  printdbg "sorted elements: @$array";
+  
+  my $elem = 1;
+  while ( $$array[$elem] ) {
+    my $current = $$array[$elem] =~ s/^\+//r;
+    my $previous = $$array[$elem - 1] =~ s/^\+//r;
+    
+    if ( $current =~ s/^-//r eq $previous =~ s/^-//r ) {
+      if ( $prompt && $current ne $previous ) {
+	$prompt =~ s/%1/$previous/g;
+	$prompt =~ s/%2/$current/g;
+	$prompt .= "\nPlease choose action (1: keep former, 2: keep latter, 3: remove both) ";
+	my $in = 1 if $DEBUG;
+	printdbg "duplicate element: $current vs $previous";
+	
+	$in = $in || prompt ({
+			      prompt		=> $prompt,
+			      prompt_invalid	=> 'Please answer with 1, 2 or 3 ',
+			      allowed_replies	=> [ '1', '2', '3' ]
+			     });
+	splice @$array, $elem, 1 if $in == 1;
+	splice @$array, $elem - 1, 1 if $in == 2;
+	splice @$array, $elem - 1, 2 if $in == 3;
+      } else {      
+	printdbg "duplicate element: $current vs $previous";
+	splice @$array, $elem, 1;
+      }
+    } else {
+      $elem++;
+    }
+  }
+  return $array;
+}
+
+##################################################################################################
+######################################### PRINT MESSAGES #########################################
+##################################################################################################
+
+##################################################################################################
+# print a message for packages with no installed versions matching atom
+sub not_installed ($) {
+  my $entry = shift;
+  if ( $verbose ) {
+    print color('bold', 'red');
+    print "\nNo matching version installed, deleting entry.";
+    print color('reset');
+  } else {
+    print color('bold', 'red');
+    printl { text => "No matching version installed for:" };
+    print $entry;
+    printl { text => "Deleting entry." };
+    print "\n";
+    print color ('reset');
+  }
+  return 1;
+}
+
+##################################################################################################
+# print a message for packages with no valid use flags
+sub no_use ($) {
+  my $entry = shift;
+  if ( $verbose ) {
+    print color('bold', 'red');
+    print "\nNo USE flags listed, deleting entry.";
+    print color('reset');
+  } else {
+    print color('bold', 'red');
+    printl { text => "No USE flags listed for:" };
+    print $entry;
+    printl { text => "Deleting entry." };
+    print "\n";
+    print color ('reset');
+  }
+  return 1;
+}
+
+##################################################################################################
+# print a message for invalid args
+sub invalid_arg ($) {
+  my $arg = ${$_[0]}{arg} or die;
+  my $arg_type = ${$_[0]}{arg_type} or die;
+  my $pkg_name = ${$_[0]}{pkg_name} or die;
+  if ( $verbose ) {
+    print color('bold', 'red');
+    print "\nInvalid $arg_type $arg, deleting it.";
+    print color('reset');
+  } else {
+    print color('bold', 'red');
+    printl { text => "No such $arg_type:" };
+    print $arg;
+    printl { text => "for versions matching:" };
+    print $pkg_name;
+    printl { text => "Deleting $arg_type." };
+    print "\n";
+    print color('reset');
+  }
+  return 1;
+}
+
+##################################################################################################
+# print a string of text into the left column, justifying it
+sub printl ($) {
+  my $opts = shift;
+  my $text = $$opts{text};	# text to be printed
+  my $left_column_width = $$opts{left_column_width} || $left_column_width; # width of left column
+  my $tab_width = $$opts{tab_width} || $tab_width; # separation of left and right columns
+  my $justify = $$opts{justify} || 'right';	   # justification
+  *OUT = $$opts{out} || *STDOUT;
+  print "\n" if *OUT eq *STDOUT;
+  
+  my $txt_lgth = length $text;
+  if ( $txt_lgth < $left_column_width ) {
+    print OUT " " x ( $left_column_width - $txt_lgth ) . $text . " " x $tab_width if $justify eq 'right';
+    print OUT $text . " " x ( $left_column_width - $txt_lgth ) . " " x $tab_width if $justify eq 'left';
+  } elsif ( $txt_lgth < $left_column_width + $tab_width ) {
+    print OUT $text . " " x ( $left_column_width + $tab_width - $txt_lgth );
+  } else {
+    print OUT $text . " ";
+  }
+  return 1;
+}
+
+##################################################################################################
+# print a long string of text into the right column, separating it in lines and applying tabbing
+sub printr ($) {
+  my $opts = shift;
+  my $text = $$opts{text};	# text to be printed
+  my $left_column_width = $$opts{left_column_width} || $left_column_width + $tab_width;
+  my $right_column_width = $$opts{right_column_width} || $right_column_width;
+  *OUT = $$opts{out} || *STDOUT;
+
+  my $row_num = 0;
+  my $line = '';
+  for ( split //, $text ) {
+    if ( POSIX::floor( ( length($line) + $left_column_width ) /
+		       ( $right_column_width + $left_column_width )
+		     ) == $row_num
+	 || $_ ne ' ' ) {
+      $line .= "$_";
+      next;
+    }		 # still on the same row (or inside a word), just add a char and continue
+    $line .= "\n" . " " x $left_column_width; # else, continue on a newline
+    $row_num++;
+  }
+  print OUT $line;
+  return 1;
+}
+
+##################################################################################################
+# print a debugging message
+sub printdbg {
+  return unless $DEBUG;
+  print "debug: $_" . ($_ eq "\n" ? "" : "\n") for @_;
+}
+
+##################################################################################################
+# prompt the user for input
+sub prompt ($) {
+  my $prompt = ${$_[0]}{prompt} or die;
+  my $prompt_invalid = ${$_[0]}{prompt_invalid} || $prompt;
+  my $allowed_replies = ${$_[0]}{allowed_replies} || [ 'yes', 'y', 'no', 'n' ];
+  print color('bold yellow');
+  print $prompt;
+  print color('reset');
+  chomp (my $in = <STDIN>);
+  $in =~ s/^\s+|\s+$//g;
+  for ( @$allowed_replies ) {
+    return $in if $in eq $_;
+  }
+  prompt ({
+	   prompt		=> $prompt_invalid,
+	   allowed_replies	=> $allowed_replies
+	  });
+}
