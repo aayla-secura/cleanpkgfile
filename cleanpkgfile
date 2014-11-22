@@ -23,7 +23,8 @@
 #   commented lines are ignored
 #   ignores lines between matching '#IGNORE#' lines
 
-use Getopt::Long qw{:config gnu_compat no_auto_abbrev no_ignore_case_always bundling permute pass_through};
+use Getopt::Long qw{:config bundling gnu_compat no_auto_abbrev
+		    no_ignore_case_always permute pass_through};
 use Cwd;
 use POSIX qw/ strftime floor /;
 use File::Basename;
@@ -45,7 +46,7 @@ sub file_process;
 sub get_atom_props;
 sub is_installed;
 sub get_atom_args;
-sub check_atom_args;
+sub get_valid_atom_args;
 sub version_or_slot_matches;
 sub version_or_slot_equals;
 sub get_lower_version;
@@ -67,7 +68,9 @@ sub prompt;
 my $debug = 0;
 my $prog_name = basename $0;
 my $verbose = 0;
+my $keep_nonmatching = 0;
 my $check = '';
+my $ignore_use_or_keyword = '';
 my $tmp_dir = '/tmp/';
 my $help_str = "See $prog_name --help";
 my $left_column_width = 22;	# width of left column
@@ -77,59 +80,80 @@ my $right_column_width = 85;	# width of right column
 {
   my %options;
   %options = (
-		 help	 => {
-			     long		=> "help",
-			     short		=> "h",
-			     argument		=> "",
-			     allowed_arguments	=> [],
-			     description	=> "Print this help message and exit.",
-			     variable		=> sub { usage \%options; }
-			    },
-		 debug	 => {
-			     long		=> "debug",
-			     short		=> "D",
-			     argument		=> "",
-			     allowed_arguments	=> [],
-			     description	=> "Saves a lot of debugging output to a " .
-			     "file in the current working directory. " .
-			     "Use only if you want to report a bug (or debug yourself).",
-			     variable		=> \$debug
-			    },
-		 verbose => {
-			     long		=> "verbose",
-			     short		=> "v",
-			     argument		=> "!",
-			     allowed_arguments	=> [],
-			     description	=> "Print information about every entry " .
-			     "being processed (off by default). Disable with --no-verbose.",
-			     variable		=> \$verbose
-			    },
-		 check	 => {
-			     long		=> "check",
-			     short		=> "c",
-			     argument		=> "=s",
-			     allowed_arguments	=> ['use', 'keyword', 'env', 'guess', 'none', ''],
-			     description	=> "Specify the type of the package " .
-			     "atom's arguments - 'use', 'keyword', 'env', 'guess' or " .
-			     "'none' (default) . Note that this affects behaviour for " .
-			     "ALL input files - use 'guess' to guess check from filename" .
-			     "/path (useful when specifying multiple files of different " .
-			     "type), use the others only if ALL input files are of the " .
-			     "specified type.",
-			     variable		=> \$check
-			    },
-		 tmp_dir => {
-			     long		=> "tmp-dir",
-			     short		=> "d",
-			     argument		=> "=s",
-			     allowed_arguments	=> [],
-			     description	=> "Directory in which the temporary " .
-			     "file will be stored before overwrite (default is /tmp). " .
-			     "If set to '' (with --tmp-dir=), the directory of the " .
-			     "currently processed file will be used.",
-			     variable		=> \$tmp_dir
-			    }
-		);
+	      help		=> {
+				    long		=> "help",
+				    short		=> "h",
+				    argument		=> "",
+				    allowed_arguments	=> [],
+				    description		=> "Print this help message and exit.",
+				    variable		=> sub { usage \%options; }
+				   },
+	      debug		=> {
+				    long		=> "debug",
+				    short		=> "D",
+				    argument		=> "",
+				    allowed_arguments	=> [],
+				    description		=> "Makes a lot of noise on STDOUT. " .
+				    "It also disables prompting the user, so you can pipe the output. " .
+				    "Use only if you want to report a bug (or debug yourself).",
+				    variable		=> \$debug
+				   },
+	      verbose		=> {
+				    long		=> "verbose",
+				    short		=> "v",
+				    argument		=> "!",
+				    allowed_arguments	=> [],
+				    description		=> "Print information about every entry " .
+				    "being processed (off by default). Disable with --no-verbose.",
+				    variable		=> \$verbose
+				   },
+	      keep_nonmatching	=> {
+				    long		=> "keep-non-matching|keep-nonmatching",
+				    short		=> "k",
+				    argument		=> "!",
+				    allowed_arguments	=> [],
+				    description		=> "Do not remove entries with no " .
+				    "matching versions installed (off by default). " .
+				    "Disable with --no-keep-non-matching|--no-keep-nonmatching.",
+				    variable		=> \$keep_nonmatching
+				   },
+	      check		=> {
+				    long		=> "check",
+				    short		=> "c",
+				    argument		=> "=s",
+				    allowed_arguments	=> ['use', 'keyword', 'env', 'guess', 'none', ''],
+				    description		=> "Specify the type of the package " .
+				    "atom's arguments - 'use', 'keyword', 'env', 'guess' or " .
+				    "'none' (default) . Note that this affects behaviour for " .
+				    "ALL input files - use 'guess' to guess check from filename" .
+				    "/path (useful when specifying multiple files of different " .
+				    "type), use the others only if ALL input files are of the " .
+				    "specified type.",
+				    variable		=> \$check
+				   },
+	      ignore_use_or_keyword	=> {
+				    long		=> "ignore-use-or-keyword",
+				    short		=> "i",
+				    argument		=> "=s",
+				    allowed_arguments	=> [],
+				    description		=> "A coma separated list of USE flags or " .
+				    "keywords to ignore during check (if checking is to be done). " .
+				    "These will NOT be removed even if they are not listed " .
+				    "in any of the installed versions matching the package.",
+				    variable		=> \$ignore_use_or_keyword
+				   },
+	      tmp_dir		=> {
+				    long		=> "tmp-dir",
+				    short		=> "d",
+				    argument		=> "=s",
+				    allowed_arguments	=> [],
+				    description		=> "Directory in which the temporary " .
+				    "file will be stored before overwrite (default is /tmp). " .
+				    "If set to '' (with --tmp-dir=), the directory of the " .
+				    "currently processed file will be used.",
+				    variable		=> \$tmp_dir
+				   }
+	     );
   
   
   # load configuration
@@ -138,10 +162,6 @@ my $right_column_width = 85;	# width of right column
   
   # process command line
   process_cmd \%options;
-  
-  open STDDBG, '>', catfile ( cwd(), $prog_name . '_debug_' .
-			       strftime ( "%b_%d_%Y_%H_%M_%S", localtime )
-			     ) if $debug;
 }
 
 # make sure filename (and no other arguments after option processing) has been specified
@@ -160,7 +180,8 @@ for my $filename ( @ARGV ) {
   # make sure file exists and is readable
   next unless length $filename;
   $filename = "/etc/portage/$filename" unless $filename =~ m|/|;
-  printdbg "tmp_dir: $tmp_dir", "file: $filename", "verbose: $verbose", "check: $check", "\n";
+  printdbg "tmp_dir: $tmp_dir", "file: $filename", "verbose: $verbose",
+    "check: $check", "ignore_use_or_keyword: $ignore_use_or_keyword", "\n";
   unless ( -f $filename ) {
     print STDERR color ('bold red');
     print STDERR "No such file: $filename\n$help_str\n";
@@ -195,7 +216,10 @@ for my $filename ( @ARGV ) {
 		 processed_lines	=> \@processed_lines,
 		 ignored_lines		=> \@ignored_lines,
 		 check			=> $check,
-		 arg_type		=> $arg_type
+		 arg_type		=> $arg_type,
+		 ignore_args		=> ( $check =~ m/^(use|keyword)$/ ?
+					     [split /,\s*/, $ignore_use_or_keyword] :
+					     [] )
 		});
 }
 
@@ -217,19 +241,23 @@ sub load_config {
   return unless -f $config_file;
   
   open my $config_file_fh, '<', $config_file or die "Cannot read $config_file. Check permissions\n";
-  while ( <$config_file_fh> ) {
+ LINE: while ( <$config_file_fh> ) {
     chomp;
+    next if $_ =~ m/^\s*(#|$)/;
     
     for my $opt ( sort keys %$options ) {
       my $opt_desc = $$options{$opt};
       my $opt_value = $$opt_desc{variable};
       
-      if ( $_ =~ m/^ \s* \Q$$opt_desc{long}\E \s*
+      if ( $_ =~ m/^ (?: \s* ($$opt_desc{long}) \s*
 		   (?> = \s* (?:
 		       true | (?<false> false ) |
-		       (?<val> [^ ]+ ) |
 		       " (?<val> [^"]+ ) " |
-		       ' (?<val> [^']+ ) ' ) )?
+		       ' (?<val> [^']+ ) ' |
+		       (?<val> [^ ]+ ) )
+		   )? |
+		   \s* (?<false> no-? ($$opt_desc{long}) ) \s*
+		 )
 		   $ /x ) {
 	
 	if ( ref $opt_value eq 'SCALAR' ) {
@@ -239,6 +267,8 @@ sub load_config {
 	elsif ( ref $opt_value eq 'ARRAY' ) {
 	  push @$opt_value, $+{val};
 	}
+	
+	next LINE;
       }
     }
   }
@@ -325,16 +355,24 @@ sub usage {
   
   for my $opt ( sort keys %$options ) {
     my $opt_desc = $$options{$opt};
+    
     printl ({
 	     text => "--$$opt_desc{long}",
 	     justify => 'left',
 	     left_column_width => ($left_column_width - 10)
 	    });
+    
+    if ( length $$opt_desc{long} > ($left_column_width - 10) ) {
+      print "\n" . " " x ($left_column_width -10 + $tab_width);
+    }
+    
     print (( $$opt_desc{short} ? "-$$opt_desc{short}" : "  " ) . " " x 8);
+    
     printr ({
 	     text => $$opt_desc{description},
 	     left_column_width => ($left_column_width + $tab_width)
 	    });
+    
     print "\n";
   }    
   print "\nIf not specified, path defaults to ";
@@ -441,6 +479,8 @@ sub file_process {
   my $lines_ignored = ${$_[0]}{ignored_lines} or die;	# lines to be ignored, i.e. inside an '#IGNORE#' block
   my $check = ${$_[0]}{check} || "";
   my $arg_type = ${$_[0]}{arg_type};
+  ref (my $ignore_args =
+       ${$_[0]}{ignore_args}) eq 'ARRAY' or die;
   
   unless ( $arg_type ) {
     $arg_type = 'USE flag' if $check eq 'use';
@@ -464,7 +504,8 @@ sub file_process {
   print "\n";
   
   # open filetmp for writing
-  open $filetmp_fh, '>', "$filename_tmp" or die "Cannot write to $filename_tmp, check directory permissions.\n";
+  open $filetmp_fh, '>', "$filename_tmp"
+    or die "Cannot write to $filename_tmp, check directory permissions.\n";
   
   # process all lines
   for my $entry ( @$lines ) {
@@ -525,7 +566,7 @@ sub file_process {
     
     my $matching_versions = is_installed $pkg;
     
-    unless ( $matching_versions ) {
+    unless ( $matching_versions || $keep_nonmatching ) {
       not_installed $atom;
       next;
     }
@@ -535,32 +576,69 @@ sub file_process {
       next;
     }
     
-    # check USE flags keywords or env files
+    # check USE flags, keywords or env files
+    
+    # if we're keeping non-matching entries, make sure get_atom_args
+    # gets an ARRAY ref - its contents do not affect 'env' checking
+    #
+    # get_atom_args will return null if it gets an empty
+    # versions array for USE or keyword checking
     my $matching_args = get_atom_args ({
-					matching_versions	=> $matching_versions,
+					matching_versions	=> $matching_versions || [],
 					check			=> $check
 				       });
-    my $valid_args = check_atom_args ({
-				       matching_args	=> $matching_args,
-				       atom		=> $atom,
-				       check		=> $check,
-				       args		=> \@args,
-				       arg_type		=> $arg_type
-				      }) || [];
+
+    my $valid_args;
+    if ( $matching_args ) {
+      # entry has a matching version installed or check is 'env'
+      # get_valid_atom_args will never return null
+      $valid_args = get_valid_atom_args ({
+				      matching_args	=> $matching_args,
+				      atom		=> $atom,
+				      check		=> $check,
+				      args		=> \@args,
+				      arg_type		=> $arg_type,
+				      ignore_args	=> $ignore_args
+				     });
+    }
     
-    # remove entries with no USE flags listed (if checking USE flags)
-    if ( $check eq 'use' && ! $valid_args ) {
-      no_use $atom;
+    # check is 'env' or there are macthing versions installed
+    if ( $valid_args ) {
+      # valid args found
+      if ( @$valid_args ) {
+	printl { text => "$atom", justify => 'left', out => $filetmp_fh };
+	printr { text => "@$valid_args", right_column_width => 1000, out => $filetmp_fh };
+	print $filetmp_fh "\n";
+	next;
+      }
+      
+      # else, if check is 'use', remove entry
+      elsif ( $check eq 'use' ) {
+	no_use $atom;
+	next;
+      }
+      
+      # else just print the atom
+      print $filetmp_fh "$atom\n";
       next;
     }
     
-    if ( @$valid_args ) {
+    # check is not 'use' or 'keyword' and there is no macthing version installed
+    # print the original args listed if any
+    if ( @args ) {
       printl { text => "$atom", justify => 'left', out => $filetmp_fh };
-      printr { text => "@$valid_args", right_column_width => 1000, out => $filetmp_fh };
+      printr { text => "@args", right_column_width => 1000, out => $filetmp_fh };
       print $filetmp_fh "\n";
       next;
     }
     
+    # else, if check is 'use', remove entry
+    elsif ( $check eq 'use' ) {
+      no_use $atom;
+      next;
+    }
+    
+    # else just print the atom
     print $filetmp_fh "$atom\n";
   }
   
@@ -570,13 +648,16 @@ sub file_process {
   
   print "\n";
   print "\n" if $verbose;
-  my $in = prompt ({
-		    prompt		=> "Changes have been saved to $filename_tmp. Overwrite $filename? (yes/no) ",
-		    prompt_invalid	=> "Please answer with yes (y) or no (n) "
-		   });
-  if ( $in =~ /y/ ) {
-    rename $filename_tmp, $filename or print STDERR color ('bold red'),
-      "\nCannot overwrite $filename. Check permissions.\n", color ('reset');
+  unless ( $debug ) {
+    my $in = prompt ({
+		      prompt		=> "Changes have been saved to $filename_tmp. " .
+		      "Overwrite $filename? (yes/no) ",
+		      prompt_invalid	=> "Please answer with yes (y) or no (n) "
+		     });
+    if ( $in =~ /y/ ) {
+      rename $filename_tmp, $filename or print STDERR color ('bold red'),
+	"\nCannot overwrite $filename. Check permissions.\n", color ('reset');
+    }
   }
 }
 
@@ -780,14 +861,15 @@ sub get_atom_args {
   my @matching_args;
   
   if ( $check =~ m/^(use|keywords)$/ ) {
-    die unless $matching_versions;
+    return unless @$matching_versions; # pkg is not installed
+    
     my $db_dir = "/var/db/pkg/";
     my $arg_file;
     $arg_file = 'IUSE' if $check eq 'use';
     $arg_file = 'KEYWORDS' if $check eq 'keywords';
     
     for ( @$matching_versions ) {
-      if ( open my $argsfile_fh, '<', catfile ($db_dir, $_, $arg_file) ) {
+      if ( open my $argsfile_fh, '<', catfile ($db_dir, $_, $arg_file) or return ) {
 	push @matching_args, split (' ', <$argsfile_fh>);
 	close $argsfile_fh;
 	
@@ -819,12 +901,13 @@ sub get_atom_args {
 
 ##################################################################################################
 # check for valid use flags, keywords, env files
-sub check_atom_args {
+sub get_valid_atom_args {
   ref (my $matching_args = ${$_[0]}{matching_args}) eq 'ARRAY' or die;
   my $atom = ${$_[0]}{atom} or die;
   my $check = ${$_[0]}{check} || "";
   ref (my $args = ${$_[0]}{args}) eq 'ARRAY' or die;
   my $arg_type = ${$_[0]}{arg_type};
+  ref (my $ignore_args = ${$_[0]}{ignore_args}) eq 'ARRAY' or die;
   
   unless ( $arg_type ) {
     $arg_type = 'USE flag' if $check eq 'use';
@@ -834,7 +917,7 @@ sub check_atom_args {
   
   unless ( @$args ) {
     printdbg "no args at all";
-    return;
+    return [];
   }
   
   if ( $verbose ) {
@@ -847,7 +930,7 @@ sub check_atom_args {
   # check if args are valid
   my @valid_args;
  ARG: for ( @$args ) {
-    for my $valid_arg ( @$matching_args ) {
+    for my $valid_arg ( ( @$matching_args, @$ignore_args ) ) {
       printdbg "$valid_arg vs $_";
       if ( $_ eq $valid_arg ||
 	 ( $_ =~ m/^[+-]?\Q$valid_arg\E/ && $check eq 'use' ) ) {
@@ -866,11 +949,6 @@ sub check_atom_args {
   
   remove_dups @valid_args, "\nContradicting ${arg_type}s: \%1, \%2 listed for " . $atom;
   printdbg "valid args: @valid_args";
-  
-  unless ( @valid_args ) {
-    printdbg "no valid args";
-    return;
-  }
   
   return \@valid_args;
 }
@@ -1072,12 +1150,16 @@ sub remove_dups (\@;$) {
 	$prompt =~ s/%2/$current/g;
 	$prompt .= "\nPlease choose action (1: keep former, 2: keep latter, 3: remove both) ";
 	printdbg "duplicate element: $current vs $previous";
+
+	my $in;
+	if ( $debug ) { $in = 1; }
 	
-	my $in = prompt ({
-			  prompt		=> $prompt,
-			  prompt_invalid	=> 'Please answer with 1, 2 or 3 ',
-			  allowed_replies	=> [ '1', '2', '3' ]
-			 });
+	else { $in = prompt ({
+			      prompt		=> $prompt,
+			      prompt_invalid	=> 'Please answer with 1, 2 or 3 ',
+			      allowed_replies	=> [ '1', '2', '3' ]
+			     });
+	     }
 	splice @$array, $elem, 1 if $in == 1;
 	splice @$array, $elem - 1, 1 if $in == 2;
 	splice @$array, $elem - 1, 2 if $in == 3;
@@ -1238,8 +1320,8 @@ sub printr {
 ##################################################################################################
 # print a debugging message
 sub printdbg {
-  return unless openhandle *STDDBG;
-  print STDDBG "debug: $_" . ($_ eq "\n" ? "" : "\n") for @_;
+  return unless $debug;
+  print "debug: $_" . ($_ eq "\n" ? "" : "\n") for @_;
 }
 
 ##################################################################################################
