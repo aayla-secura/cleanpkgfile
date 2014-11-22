@@ -23,6 +23,8 @@
 #   commented lines are ignored
 #   ignores lines between matching '#IGNORE#' lines
 
+require 5.006001;
+
 use Getopt::Long qw{:config bundling gnu_compat no_auto_abbrev
 		    no_ignore_case_always permute pass_through};
 use Cwd;
