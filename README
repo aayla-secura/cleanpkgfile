@@ -85,7 +85,7 @@ To verbosely process package.accept_keywords, package.use and package.env
 and their flags/keywords/files:
   cleanpkgfile -vcguess package.accept_keywords package.use package.env
 or if your shell supports brace expansion and globbing:
-  cleanpkgfile -vcguess package.{*keywords,use,env}
+  cleanpkgfile -vcguess /etc/portage/package.{*keywords,use,env}
 
 __________________________________________________________________________________________________
 To only remove atoms from package.use, which don't match any installed version:
@@ -112,8 +112,8 @@ Alternatively, you man exclude certain USE flags or keywords from being processe
 __________________________________________________________________________________________________
 To force overwriting the original file(s) without prompting and do a backup
 use --force-overwrite and --backup:
-  cleanpkgfile -fb package.*
+  cleanpkgfile -fb /etc/portage/package.*
 
 __________________________________________________________________________________________________
 To disable prompts and output, use --batch and --quiet:
-  cleanpkgfile -qB package.*
+  cleanpkgfile -qB /etc/portage/package.*
