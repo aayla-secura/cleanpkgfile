@@ -216,6 +216,7 @@ printdbg "files: @ARGV";
 
 $verbose = 0 if $quiet;
 $check = '' if $check eq 'none';
+$batch = 1 if $debug;
 $force_overwrite = 1 if $batch;
 # unless $do_backup has been explicitly set, $force_overwrite controls it
 if ( $do_backup eq '' ) {
@@ -235,7 +236,9 @@ for my $filename ( @ARGV ) {
   next unless length $filename;
   $filename = "/etc/portage/$filename" unless $filename =~ m|/|;
   printdbg "tmp_dir: $tmp_dir", "file: $filename", "verbose: $verbose",
-    "check: $check", "ignore_use_or_keyword: $ignore_use_or_keyword", "\n";
+    "quiet: $quiet", "batch: $batch", "do_backup: $do_backup",
+      "force_overwrite: $force_overwrite", "keep_nonmatching: $keep_nonmatching",
+	"check: $check", "ignore_use_or_keyword: $ignore_use_or_keyword", "\n";
   unless ( -f $filename ) {
     print STDERR color ('bold red');
     print STDERR "No such file: $filename\n$help_str\n";
@@ -305,7 +308,7 @@ sub load_config {
       
       if ( $_ =~ m/^ (?: \s* ($$opt_desc{long}) \s*
 		   (?> = \s* (?:
-		       true | (?<false> false ) |
+		       true | (?<false> false | 0 ) |
 		       " (?<val> [^"]+ ) " |
 		       ' (?<val> [^']+ ) ' |
 		       (?<val> [^ ]+ ) )
@@ -315,7 +318,7 @@ sub load_config {
 		   $ /x ) {
 	
 	if ( ref $opt_value eq 'SCALAR' ) {
-	  $$opt_value = ( $+{false} ? 0 : $+{val} || 1 );
+	  $$opt_value = ( length $+{false} ? 0 : $+{val} || 1 );
 	}
 	
 	elsif ( ref $opt_value eq 'ARRAY' ) {
@@ -706,7 +709,7 @@ sub file_process {
   
   my $overwrite;
   
-  if ( $debug || $force_overwrite ) { $overwrite = 'y'; }
+  if ( $force_overwrite ) { $overwrite = 'y'; }
   else {
     $overwrite = prompt ({
 			  prompt		=> "Changes have been saved to $filename_tmp. " .
@@ -1227,7 +1230,7 @@ sub remove_dup_args (\@;$) {
 	printdbg "duplicate element: $current vs $previous";
 
 	my $in;
-	if ( $debug ) { $in = 1; }
+	if ( $batch ) { $in = 1; }
 	
 	else { $in = prompt ({
 			      prompt		=> $prompt,
