@@ -24,7 +24,5 @@ RDEPEND=">dev-lang/perl-5
 
 src_install() {
 	dosbin cleanpkgfile
-	insinto /etc
-	doins cleanpkgfile.conf
-	dodoc README
+	dodoc README cleanpkgfile.conf.example
 }
