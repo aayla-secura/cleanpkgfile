@@ -31,6 +31,7 @@ use File::Basename;
 use File::Find::Rule;
 use File::Spec::Functions qw/ catdir catfile /;
 use File::Temp qw/ tempfile /;
+use File::Copy qw/ cp mv /;
 use Term::ANSIColor;
 use Scalar::Util qw/ openhandle /;
 use warnings;
@@ -50,7 +51,7 @@ sub get_valid_atom_args;
 sub version_or_slot_matches;
 sub version_or_slot_equals;
 sub get_lower_version;
-sub remove_dups (\@;$);
+sub remove_dup_args (\@;$);
 
 sub not_installed;
 sub no_use;
@@ -58,6 +59,7 @@ sub invalid_arg;
 sub printl;
 sub printr;
 sub printdbg;
+sub printmsg;
 sub prompt;
 
 ##################################################################################################
@@ -68,6 +70,10 @@ sub prompt;
 my $debug = 0;
 my $prog_name = basename $0;
 my $verbose = 0;
+my $quiet = 0;
+my $batch = 0;
+my $do_backup = '';
+my $force_overwrite = 0;
 my $keep_nonmatching = 0;
 my $check = '';
 my $ignore_use_or_keyword = '';
@@ -106,6 +112,46 @@ my $right_column_width = 85;	# width of right column
 				    description		=> "Print information about every entry " .
 				    "being processed (off by default). Disable with --no-verbose.",
 				    variable		=> \$verbose
+				   },
+	      quiet		=> {
+				    long		=> "quiet",
+				    short		=> "q",
+				    argument		=> "!",
+				    allowed_arguments	=> [],
+				    description		=> "Do not produce any output - only " .
+				    "prompts (off by default). Takes precedence over --verbose. " .
+				    "Disable with --no-quiet.",
+				    variable		=> \$quiet
+				   },
+	      batch		=> {
+				    long		=> "batch",
+				    short		=> "B",
+				    argument		=> "!",
+				    allowed_arguments	=> [],
+				    description		=> "Do not prompt the user - choose " .
+				    "default action and force overwrite (off by default). " .
+				    "Disable with --no-batch.",
+				    variable		=> \$batch
+				   },
+	      backup		=> {
+				    long		=> "backup",
+				    short		=> "b",
+				    argument		=> "!",
+				    allowed_arguments	=> [],
+				    description		=> "Backup original files before " .
+				    "overwriting (off by default unless --force-overwrite is set). " .
+				    "Disable with --no-backup.",
+				    variable		=> \$do_backup
+				   },
+	      force_overwrite	=> {
+				    long		=> "force-overwrite",
+				    short		=> "f",
+				    argument		=> "!",
+				    allowed_arguments	=> [],
+				    description		=> "Do not prompt to save changes - backup " .
+				    "the original file (unless --no-backup is set) and write changes " .
+				    "(off by default). Disable with --no-force-overwrite.",
+				    variable		=> \$force_overwrite
 				   },
 	      keep_nonmatching	=> {
 				    long		=> "keep-non-matching|keep-nonmatching",
@@ -167,7 +213,15 @@ my $right_column_width = 85;	# width of right column
 # make sure filename (and no other arguments after option processing) has been specified
 die "Please specify at least one filename.\n$help_str\n" unless @ARGV;
 printdbg "files: @ARGV";
+
+$verbose = 0 if $quiet;
 $check = '' if $check eq 'none';
+$force_overwrite = 1 if $batch;
+# unless $do_backup has been explicitly set, $force_overwrite controls it
+if ( $do_backup eq '' ) {
+  if ( $force_overwrite ) { $do_backup = 1; }
+  else { $do_backup = 0; }
+}
 
 ##################################################################################################
 for my $filename ( @ARGV ) {
@@ -328,15 +382,15 @@ sub check_options {
       }
     }
     
-    print "$error\n" if $error;
-    print "Invalid option value for $$opt_desc{long}: " .
+    printmsg "$error\n" if $error;
+    printmsg "Invalid option value for $$opt_desc{long}: " .
       "Choose one of @allowed_values\n";
   }
 	
 }
 
 ##################################################################################################
-# print usage and exit
+# printmsg usage and exit
 sub usage {
   ref ( my $options = shift ) eq 'HASH' or return;
   
@@ -346,12 +400,12 @@ sub usage {
   - commented lines are ignored
   - also ignores lines between matching #IGNORE# lines';
   
-  print "$description\n\n";
-  print color('bold'), "Usage: ";
-  print color('cyan'), $prog_name;
-  print color('green'), " <options> [<path to files>]files";
-  print color('white'), "\n\nOptions:\n";
-  print color('reset');
+  printmsg "$description\n\n";
+  printmsg color('bold'), "Usage: ";
+  printmsg color('cyan'), $prog_name;
+  printmsg color('green'), " <options> [<path to files>]files";
+  printmsg color('white'), "\n\nOptions:\n";
+  printmsg color('reset');
   
   for my $opt ( sort keys %$options ) {
     my $opt_desc = $$options{$opt};
@@ -363,30 +417,30 @@ sub usage {
 	    });
     
     if ( length $$opt_desc{long} > ($left_column_width - 10) ) {
-      print "\n" . " " x ($left_column_width -10 + $tab_width);
+      printmsg "\n" . " " x ($left_column_width -10 + $tab_width);
     }
     
-    print (( $$opt_desc{short} ? "-$$opt_desc{short}" : "  " ) . " " x 8);
+    printmsg (( $$opt_desc{short} ? "-$$opt_desc{short}" : "  " ) . " " x 8);
     
     printr ({
 	     text => $$opt_desc{description},
 	     left_column_width => ($left_column_width + $tab_width)
 	    });
     
-    print "\n";
+    printmsg "\n";
   }    
-  print "\nIf not specified, path defaults to ";
-  print color('bold green'), "/etc/portage/\n";
-  print color('reset');
-  print "If you want to clean package in the current directory, use ";
-  print color('bold cyan'), "$prog_name <options> ./file\n";
-  print color('reset');
-  print "If file's name begins with -, use ";
-  print color('bold cyan'), "$prog_name <options> -- file\n";
-  print color('reset');
-  print "If found, a configuration file is read from " .
+  printmsg "\nIf not specified, path defaults to ";
+  printmsg color('bold green'), "/etc/portage/\n";
+  printmsg color('reset');
+  printmsg "If you want to clean package in the current directory, use ";
+  printmsg color('bold cyan'), "$prog_name <options> ./file\n";
+  printmsg color('reset');
+  printmsg "If file's name begins with -, use ";
+  printmsg color('bold cyan'), "$prog_name <options> -- file\n";
+  printmsg color('reset');
+  printmsg "If found, a configuration file is read from " .
     "~/.$prog_name.conf, ~/.conf/$prog_name/$prog_name.conf or /etc/$prog_name.conf\n";
-#  print "If you encounter a bug, use the -D option, save the output to a file and report.\n";
+#  printmsg "If you encounter a bug, use the -D option, save the output to a file and report.\n";
   
   exit 0;
 }
@@ -491,17 +545,17 @@ sub file_process {
   # set tmp filename
   my ($filetmp_fh, $filename_tmp) = tempfile ( DIR => $tmp_dir, UNLINK => 0 );
   
-  print color('bold cyan');
+  printmsg color('bold cyan');
   printl { text => "Processing file:" };
-  print $filename;
+  printmsg $filename;
   printl { text => "Temporary file:" };
-  print $filename_tmp;
+  printmsg $filename_tmp;
   if ( $check ) {    
     printl { text => "Checking:" };
-    print "${arg_type}s";
+    printmsg "${arg_type}s";
   }
-  print color('reset');
-  print "\n";
+  printmsg color('reset');
+  printmsg "\n";
   
   # open filetmp for writing
   open $filetmp_fh, '>', "$filename_tmp"
@@ -517,15 +571,15 @@ sub file_process {
       next;
     }
     
-    print "\n" if $verbose;
+    printmsg "\n" if $verbose;
     
     # ignore commented lines
     if ( $entry =~ m/^#/ ) {
       if ( $verbose ) {
-	print color('bold', 'green');
+	printmsg color('bold', 'green');
 	printl { text => "Skipping commented line:" };
-	print $entry;
-	print color('reset');
+	printmsg $entry;
+	printmsg color('reset');
       }
       printdbg "comment";
       print $filetmp_fh "$entry\n";
@@ -538,9 +592,9 @@ sub file_process {
         
     if ( $verbose ) {
       printl { text => "Processing entry for:" };
-      print $$pkg{name};
+      printmsg $$pkg{name};
       printl { text => "Version listed is:" };
-      print $atom =~ s/\Q$$pkg{name}\E-?//r;
+      printmsg $atom =~ s/\Q$$pkg{name}\E-?//r;
     }
     
     unless ( $$pkg{name} =~ m|/| ) {
@@ -618,13 +672,13 @@ sub file_process {
 	next;
       }
       
-      # else just print the atom
+      # else just printmsg the atom
       print $filetmp_fh "$atom\n";
       next;
     }
     
     # check is not 'use' or 'keyword' and there is no macthing version installed
-    # print the original args listed if any
+    # printmsg the original args listed if any
     if ( @args ) {
       printl { text => "$atom", justify => 'left', out => $filetmp_fh };
       printr { text => "@args", right_column_width => 1000, out => $filetmp_fh };
@@ -638,7 +692,7 @@ sub file_process {
       next;
     }
     
-    # else just print the atom
+    # else just printmsg the atom
     print $filetmp_fh "$atom\n";
   }
   
@@ -646,18 +700,38 @@ sub file_process {
   print $filetmp_fh "$_\n" for @$lines_ignored;
   close $filetmp_fh;
   
-  print "\n";
-  print "\n" if $verbose;
-  unless ( $debug ) {
-    my $in = prompt ({
-		      prompt		=> "Changes have been saved to $filename_tmp. " .
-		      "Overwrite $filename? (yes/no) ",
-		      prompt_invalid	=> "Please answer with yes (y) or no (n) "
-		     });
-    if ( $in =~ /y/ ) {
-      rename $filename_tmp, $filename or print STDERR color ('bold red'),
-	"\nCannot overwrite $filename. Check permissions.\n", color ('reset');
+  printmsg "\n";
+  printmsg "\n" if $verbose;
+  print "\n" if $quiet && ! $batch;
+  
+  my $overwrite;
+  
+  if ( $debug || $force_overwrite ) { $overwrite = 'y'; }
+  else {
+    $overwrite = prompt ({
+			  prompt		=> "Changes have been saved to $filename_tmp. " .
+			  "Overwrite $filename? (yes/no) ",
+			  prompt_invalid	=> "Please answer with yes (y) or no (n) "
+			 });
+  }
+  
+  if ( $overwrite =~ /y/ ) {
+    my $mode = (stat $filename)[2] & 07777;
+    my ($uid, $gid) = (stat $filename)[4,5];
+    
+    if ( $do_backup ) {
+      unless ( mv $filename, $filename . '~' ) {
+	 print STDERR color ('bold red');
+	 print STDERR "\nCannot backup $filename to $filename~. Check permissions.\n";
+	 print STDERR color ('reset');
+	 return;
+       }
     }
+    
+    mv $filename_tmp, $filename or print STDERR color ('bold red'),
+      "\nCannot overwrite $filename. Check permissions.\n", color ('reset');
+    chmod $mode | 0600, $filename;
+    chown $uid, $gid, $filename;
   }
 }
 
@@ -886,7 +960,7 @@ sub get_atom_args {
       push @matching_args, '~*';
     }
     
-    remove_dups @matching_args;
+    remove_dup_args @matching_args;
     
   } elsif ( $check eq 'env' ) {
     printdbg "getting env files";
@@ -947,7 +1021,8 @@ sub get_valid_atom_args {
 		  });
   }
   
-  remove_dups @valid_args, "\nContradicting ${arg_type}s: \%1, \%2 listed for " . $atom;
+  remove_dup_args @valid_args,
+    ( $batch ? "" : "\nContradicting ${arg_type}s: \%1, \%2 listed for " . $atom );
   printdbg "valid args: @valid_args";
   
   return \@valid_args;
@@ -1131,7 +1206,7 @@ sub get_lower_version {
 
 ##################################################################################################
 # sort and remove duplicate elements in array ignoring leading +/- (for USE flags)
-sub remove_dups (\@;$) {
+sub remove_dup_args (\@;$) {
   ref (my $array = shift) eq 'ARRAY' or die;
   my $prompt = shift || "";
   return $array if @$array < 2;
@@ -1184,90 +1259,92 @@ sub remove_dups (\@;$) {
 ##################################################################################################
 
 ##################################################################################################
-# print a message for packages with no installed versions matching atom
+# printmsg a message for packages with no installed versions matching atom
 sub not_installed {
   my $entry = shift or die;
   
   if ( $verbose ) {
-    print color('bold', 'red');
-    print "\nNo matching version installed, deleting entry.";
-    print color('reset');
+    printmsg color('bold', 'red');
+    printmsg "\nNo matching version installed, deleting entry.";
+    printmsg color('reset');
   }
   
   else {
-    print color('bold', 'red');
+    printmsg color('bold', 'red');
     printl { text => "No matching version installed for:" };
-    print $entry;
+    printmsg $entry;
     printl { text => "Deleting entry." };
-    print "\n";
-    print color ('reset');
+    printmsg "\n";
+    printmsg color ('reset');
   }
   
   return 1;
 }
 
 ##################################################################################################
-# print a message for packages with no valid use flags
+# printmsg a message for packages with no valid use flags
 sub no_use {
   my $entry = shift or die;
   
   if ( $verbose ) {
-    print color('bold', 'red');
-    print "\nNo USE flags listed, deleting entry.";
-    print color('reset');
+    printmsg color('bold', 'red');
+    printmsg "\nNo USE flags listed, deleting entry.";
+    printmsg color('reset');
   }
   
   else {
-    print color('bold', 'red');
+    printmsg color('bold', 'red');
     printl { text => "No USE flags listed for:" };
-    print $entry;
+    printmsg $entry;
     printl { text => "Deleting entry." };
-    print "\n";
-    print color ('reset');
+    printmsg "\n";
+    printmsg color ('reset');
   }
   
   return 1;
 }
 
 ##################################################################################################
-# print a message for invalid args
+# printmsg a message for invalid args
 sub invalid_arg {
   my $arg = ${$_[0]}{arg} or die;
   my $arg_type = ${$_[0]}{arg_type} or die;
   my $pkg_name = ${$_[0]}{pkg_name} or die;
   
   if ( $verbose ) {
-    print color('bold', 'red');
-    print "\nInvalid $arg_type $arg, deleting it.";
-    print color('reset');
+    printmsg color('bold', 'red');
+    printmsg "\nInvalid $arg_type $arg, deleting it.";
+    printmsg color('reset');
   }
   
   else {
-    print color('bold', 'red');
+    printmsg color('bold', 'red');
     printl { text => "No such $arg_type:" };
-    print $arg;
+    printmsg $arg;
     printl { text => "for versions matching:" };
-    print $pkg_name;
+    printmsg $pkg_name;
     printl { text => "Deleting $arg_type." };
-    print "\n";
-    print color('reset');
+    printmsg "\n";
+    printmsg color('reset');
   }
   
   return 1;
 }
 
 ##################################################################################################
-# print a string of text into the left column, justifying it
+# printmsg a string of text into the left column, justifying it
 sub printl {
   ref (my $options = shift) eq 'HASH' or die;
-  my $text = $$options{text} || "";				# text to be printed
+  my $text = $$options{text} || "";				# text to be printmsged
   my $left_column_width = $$options{left_column_width} ||
     $left_column_width;						# width of left column
   my $tab_width = $$options{tab_width} || $tab_width;		# separation of left and right columns
   my $justify = $$options{justify} || 'right';			# justification
   my $out_fh = $$options{out} || *STDOUT;
+
+  return if $quiet && $out_fh eq *STDOUT;
   
-  print "\n" if $out_fh eq *STDOUT;
+  printmsg "\n" if $out_fh eq *STDOUT;
   
   my $txt_lgth = length $text;
   
@@ -1288,15 +1365,17 @@ sub printl {
 }
 
 ##################################################################################################
-# print a long string of text into the right column, separating it in lines and applying tabbing
+# printmsg a long string of text into the right column, separating it in lines and applying tabbing
 sub printr {
   ref (my $options = shift) eq 'HASH' or die;
-  my $text = $$options{text} || "";				# text to be printed
+  my $text = $$options{text} || "";				# text to be printmsged
   my $left_column_width = $$options{left_column_width} ||
     $left_column_width + $tab_width;				# width of left column + tab
   my $right_column_width = $$options{right_column_width} ||
     $right_column_width;					# width of right column
   my $out_fh = $$options{out} || *STDOUT;
+
+  return if $quiet && $out_fh eq *STDOUT;
   
   my $row_num = 0;
   my $line = '';
@@ -1318,10 +1397,17 @@ sub printr {
 }
 
 ##################################################################################################
-# print a debugging message
+# printmsg a debugging message
 sub printdbg {
-  return unless $debug;
-  print "debug: $_" . ($_ eq "\n" ? "" : "\n") for @_;
+  return if $quiet || ! $debug;
+  printmsg "debug: $_" . ($_ eq "\n" ? "" : "\n") for @_;
+}
+
+##################################################################################################
+# printmsg unless quiet mode is on
+sub printmsg {
+  return if $quiet;
+  print $_ for @_;
 }
 
 ##################################################################################################

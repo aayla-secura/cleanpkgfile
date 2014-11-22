@@ -35,6 +35,12 @@ Configuration options are overridden by command line switches.
 ##################################################################################################
 COMMAND LINE OPTIONS
 
+--backup   -b  Backup original files before overwriting (off by default unless --force-overwrite is set).
+               Disable with --no-backup.
+
+--batch    -B  Do not prompt the user - choose default action and force overwrite (off by default).
+               Disable with --no-batch.
+
 --check    -c  Specify the type of the package atom's arguments - 'use', 'keyword', 'env', 'guess' or
                'none' (default) . Note that this affects behaviour for ALL input files - use 'guess'
                to guess check from filename/path (useful when specifying multiple files of different
@@ -42,6 +48,10 @@ COMMAND LINE OPTIONS
 
 --debug    -D  Makes a lot of noise on STDOUT. It also disables prompting the user, so you can pipe the
                output. Use only if you want to report a bug (or debug yourself).
+
+--force-overwrite
+           -f  Do not prompt to save changes - backup the original file (unless --no-backup is set) and
+               write changes (off by default). Disable with --no-force-overwrite.
 
 --help     -h  Print this help message and exit.
 
@@ -53,6 +63,9 @@ COMMAND LINE OPTIONS
 --keep-non-matching|keep-nonmatching
            -k  Do not remove entries with no matching versions installed (off by default). Disable with
                --no-keep-non-matching|--no-keep-nonmatching.
+
+--quiet    -q  Do not produce any output - only prompts (off by default). Takes precedence over --verbose.
+               Disable with --no-quiet.
 
 --tmp-dir  -d  Directory in which the temporary file will be stored before overwrite (default is /tmp).
                If set to '' (with --tmp-dir=), the directory of the currently processed file will be used.
@@ -67,18 +80,19 @@ If file's name begins with -, use cleanpkgfile <options> -- file
 ##################################################################################################
 EXAMPLES
 
-- To verbosely process package.accept_keywords, package.use and package.env
+__________________________________________________________________________________________________
+To verbosely process package.accept_keywords, package.use and package.env
 and their flags/keywords/files:
   cleanpkgfile -vcguess package.accept_keywords package.use package.env
 or if your shell supports brace expansion and globbing:
   cleanpkgfile -vcguess package.{*keywords,use,env}
 
-
-- To only remove atoms from package.use, which don't match any installed version:
+__________________________________________________________________________________________________
+To only remove atoms from package.use, which don't match any installed version:
   cleanpkgfile -vcnone package.use
 
-
-- cleanpkgfile will ignore any commented lines.
+__________________________________________________________________________________________________
+cleanpkgfile will ignore any commented lines.
 If you want to exclude certain non-commented entries from being processed,
 put them inside an #IGNORE# block, like so:
 
@@ -91,6 +105,15 @@ sys-libs/e2fsprogs-libs abi_x86_32
 
 #IGNORE#
 
-- Alternatively, you man exclude certain USE flags or keywords from being processed
+Alternatively, you man exclude certain USE flags or keywords from being processed
 (and hence removed if found to be invalid) with the --ignore-use-or-keyword option:
   cleanpkgfile -cguess -iabi_x86_32,minimal package.use
+
+__________________________________________________________________________________________________
+To force overwriting the original file(s) without prompting and do a backup
+use --force-overwrite and --backup:
+  cleanpkgfile -fb package.*
+
+__________________________________________________________________________________________________
+To disable prompts and output, use --batch and --quiet:
+  cleanpkgfile -qB package.*
