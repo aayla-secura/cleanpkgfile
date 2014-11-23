@@ -7,6 +7,9 @@ and make sure it's executable:
   chmod +x cleanpkfile
   cp cleanpkgfile /usr/sbin
 
+The _cleanpkgfile contains zsh-completion function - you can place it anywhere in your $fpath
+(globally, it would be /usr/share/zsh/site-functions)
+
 It needs perl > v5 and File::Temp, File::Find::Rule, and Term::ANSIColor.
 
 ##################################################################################################
