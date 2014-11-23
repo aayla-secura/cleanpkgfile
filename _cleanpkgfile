@@ -1,0 +1,31 @@
+#compdef cleanpkgfile
+
+_cleanpkgfile () {
+  local state tmp options
+  options=(
+    {'(--backup)-b','(-b)--backup'}'[Always backup original files]'
+    {'(--batch)-B','(-B)--batch'}'[Batch mode - do not prompt (enables force-overwrite)]'
+    {'(--check)-c+','(-c)--check='}'[Set check mode: use, keywords, env, guess or none]:check mode:(use keywords env guess none)'
+    {'(--debug)-D','(-D)--debug'}'[Enable debug mode]'
+    {'(--force-overwrite)-f','(-f)--force-overwrite'}'[Automatically overwrite original file]'
+    {'(--help)-h','(-h)--help'}'[show usage and exit]'
+    {'(--ignore-use-or-keyword)-i+','(-i)--ignore-use-or-keyword='}'[Ignore list of USE flags/keywords]:use flags:_gentoo_packages useflag'
+    {'(--keep-non-matching --keep-nonmatching)-k','(-k --keep-nonmatching)--keep-non-matching'}'[Do not remove entries with no installed versions]'
+    {'(--quiet --verbose -v)-q','(-q --verbose -v)--quiet'}'[Only prompt, do not produce other output]'
+    {'(--tmp-dir)-d+','(-d)--tmp-dir='}'[Set temporary directory]:path to dir:_files -/'
+    {'(--verbose --quiet -q)-v','(-v --quiet -q)--verbose'}'[Print information about every entry]'
+  )
+  if (( CURRENT > 1 ));then
+  case "$words[-1]" in
+    -*)
+      _arguments -s $options && ret=0
+      ;;
+    p*)
+      _arguments '*:files:_path_files -W "/etc/portage/" -F ".*" -g "package.*"' && ret=0
+      ;;
+    *)
+      _arguments '*:files:_files' && ret=0
+      ;;
+  esac
+  fi
+}
