@@ -227,64 +227,97 @@ if ( $do_backup eq '' ) {
 }
 
 ##################################################################################################
-for my $filename ( @ARGV ) {
+for my $path ( @ARGV ) {
   # make sure tmp_dir is valid and is writable
-  my $tmp_dir = $tmp_dir || dirname "$filename";
-  die "No such directory: $tmp_dir\n$help_str\n" unless -d $tmp_dir;
-  die "Cannot write to $tmp_dir, check directory permissions.\n"
-    unless -x $tmp_dir && -r $tmp_dir && -w $tmp_dir;
+  my $tmp_dir = $tmp_dir || dirname "$path";
   
-  # make sure file exists and is readable
-  next unless length $filename;
-  $filename = "/etc/portage/$filename" unless $filename =~ m|/|;
-  {
-    my $cwd = cwd();
-    $filename =~ s|^\./|$cwd/|;
-  }
-  $filename =~ s|\./||;
-  printdbg "tmp_dir: $tmp_dir", "file: $filename", "verbose: $verbose",
-    "quiet: $quiet", "batch: $batch", "do_backup: $do_backup",
-      "force_overwrite: $force_overwrite", "keep_nonmatching: $keep_nonmatching",
-	"check: $check", "ignore_use_or_keyword: $ignore_use_or_keyword", "\n";
-  unless ( -f $filename ) {
+  unless ( -d $tmp_dir ) {
     print STDERR color ('bold red');
-    print STDERR "No such file: $filename\n$help_str\n";
+    print STDERR "No such directory: $tmp_dir\n$help_str\n";
     print STDERR color ('reset');
     next;
   }
   
-  my @processed_lines;
-  my @ignored_lines;
-  
-  my $check = $check;
-  if ( $check eq 'guess' ) {
-    $check = 'use' if $filename =~ m/use/;
-    $check = 'keywords' if $filename =~ m/keywords/;
-    $check = 'env' if $filename =~ m/env/;
-    $check = '' if $check eq 'guess';
+  unless ( -x $tmp_dir && -r $tmp_dir && -w $tmp_dir ) {
+    print STDERR color ('bold red');
+    print STDERR "Cannot write to $tmp_dir, check directory permissions.\n";
+    print STDERR color ('reset');
+    next;
   }
   
-  my $arg_type;
-  $arg_type = 'USE flag' if $check eq 'use';
-  $arg_type = 'keyword' if $check eq 'keywords';
-  $arg_type = 'env file' if $check eq 'env';
+  # make sure file exists and is readable
+  next unless length $path;
+  
+  $path = "/etc/portage/$path" unless $path =~ m|/(?!$)|;
+  {
+    # get full path to file, needed if check is 'guess'
+    my $cwd = cwd();
+    $path =~ s|^\./|$cwd/|;
+  }
+  $path =~ s|\./||;
+  printdbg "tmp_dir: $tmp_dir", "path: $path", "verbose: $verbose",
+    "quiet: $quiet", "batch: $batch", "do_backup: $do_backup",
+      "force_overwrite: $force_overwrite", "keep_nonmatching: $keep_nonmatching",
+	"check: $check", "ignore_use_or_keyword: $ignore_use_or_keyword", "\n";
+  
+  unless ( -e $path ) {
+    print STDERR color ('bold red');
+    print STDERR "No such file: $path\n$help_str\n";
+    print STDERR color ('reset');
+    next;
+  }
+
+  my @files;
+  if ( -d $path ) {
+    my $path_fh;
+    unless ( opendir $path_fh, $path ) {
+      print STDERR color ('bold red');
+      print STDERR "Cannot read directory $path. Check permissions.\n";
+      print STDERR color ('reset');
+      next;
+    }
+
+    @files = map { catfile ($path, $_) } grep { $_ !~ m/^\.\.?$/ } readdir $path_fh;
+    closedir $path_fh;
+  }
+  elsif ( -f $path ) {
+    push @files, $path;
+  }
+  
+  for my $filename ( @files ) {
+    my @processed_lines;
+    my @ignored_lines;
     
-  file_preprocess ({
-		    filename		=> $filename,
-		    processed_lines	=> \@processed_lines,
-		    ignored_lines	=> \@ignored_lines
-		   });
-  file_process ({
-		 filename		=> $filename,
-		 tmp_dir		=> $tmp_dir,
-		 processed_lines	=> \@processed_lines,
-		 ignored_lines		=> \@ignored_lines,
-		 check			=> $check,
-		 arg_type		=> $arg_type,
-		 ignore_args		=> ( $check =~ m/^(use|keyword)$/ ?
+    my $check = $check;
+    if ( $check eq 'guess' ) {
+      $check = 'use' if $filename =~ m/use/;
+      $check = 'keywords' if $filename =~ m/keywords/;
+      $check = 'env' if $filename =~ m/env/;
+      $check = '' if $check eq 'guess';
+    }
+  
+    my $arg_type;
+    $arg_type = 'USE flag' if $check eq 'use';
+    $arg_type = 'keyword' if $check eq 'keywords';
+    $arg_type = 'env file' if $check eq 'env';
+    
+    file_preprocess ({
+		      filename		=> $filename,
+		      processed_lines	=> \@processed_lines,
+		      ignored_lines	=> \@ignored_lines
+		     });
+    file_process ({
+		   filename		=> $filename,
+		   tmp_dir		=> $tmp_dir,
+		   processed_lines	=> \@processed_lines,
+		   ignored_lines		=> \@ignored_lines,
+		   check			=> $check,
+		   arg_type		=> $arg_type,
+		   ignore_args		=> ( $check =~ m/^(use|keyword)$/ ?
 					     [split /,\s*/, $ignore_use_or_keyword] :
 					     [] )
-		});
+		  });
+  }
 }
 
 exit 0;
@@ -304,7 +337,7 @@ sub load_config {
   $config_file = catfile ( '/etc/', "$prog_name.conf" ) unless -f $config_file;
   return unless -f $config_file;
   
-  open my $config_file_fh, '<', $config_file or die "Cannot read $config_file. Check permissions\n";
+  open my $config_file_fh, '<', $config_file or die "Cannot read $config_file. Check permissions.\n";
  LINE: while ( <$config_file_fh> ) {
     chomp;
     next if $_ =~ m/^\s*(#|$)/;
@@ -439,15 +472,21 @@ sub usage {
 	    });
     
     printmsg "\n";
-  }    
-  printmsg "\nIf not specified, path defaults to ";
+  }
+  
+  printmsg "\n";
+  printmsg "If ";
+  printmsg color('bold green'), "file";
+  printmsg color('reset');
+  printmsg " is a directory, all files inside it are processed\n";
+  printmsg "If not specified, path defaults to ";
   printmsg color('bold green'), "/etc/portage/\n";
   printmsg color('reset');
-  printmsg "If you want to clean package in the current directory, use ";
-  printmsg color('bold cyan'), "$prog_name <options> ./file\n";
+  printmsg "If you want to clean files in the current directory, use ";
+  printmsg color('bold cyan'), "$prog_name <options> ./files\n";
   printmsg color('reset');
   printmsg "If file's name begins with -, use ";
-  printmsg color('bold cyan'), "$prog_name <options> -- file\n";
+  printmsg color('bold cyan'), "$prog_name <options> -- files\n";
   printmsg color('reset');
   printmsg "If found, a configuration file is read from " .
     "~/.$prog_name.conf, ~/.conf/$prog_name/$prog_name.conf or /etc/$prog_name.conf\n";
@@ -470,7 +509,7 @@ sub file_preprocess {
   my $file_fh;
   unless ( open $file_fh, '<', "$filename" ) {
     print STDERR color ('bold red');
-    print STDERR "Cannot read $filename! Check permissions.\n";
+    print STDERR "Cannot read $filename. Check permissions.\n";
     print STDERR color ('reset');
     return;
   }
