@@ -219,7 +219,7 @@ printdbg "files: @ARGV";
 $verbose = 0 if $quiet;
 $check = '' if $check eq 'none';
 $batch = 1 if $debug;
-$force_overwrite = 1 if $batch;
+$force_overwrite = 1 if $batch && ! $debug;
 # unless $do_backup has been explicitly set, $force_overwrite controls it
 if ( $do_backup eq '' ) {
   if ( $force_overwrite ) { $do_backup = 1; }
@@ -237,6 +237,11 @@ for my $filename ( @ARGV ) {
   # make sure file exists and is readable
   next unless length $filename;
   $filename = "/etc/portage/$filename" unless $filename =~ m|/|;
+  {
+    my $cwd = cwd();
+    $filename =~ s|^\./|$cwd/|;
+  }
+  $filename =~ s|\./||;
   printdbg "tmp_dir: $tmp_dir", "file: $filename", "verbose: $verbose",
     "quiet: $quiet", "batch: $batch", "do_backup: $do_backup",
       "force_overwrite: $force_overwrite", "keep_nonmatching: $keep_nonmatching",
@@ -390,6 +395,7 @@ sub check_options {
     printmsg "$error\n" if $error;
     printmsg "Invalid option value for $$opt_desc{long}: " .
       "Choose one of @allowed_values\n";
+    $$opt_value = '';
   }
 	
 }
@@ -537,7 +543,7 @@ sub file_process {
   my $lines = ${$_[0]}{processed_lines} or die;		# lines to be processed, default
   my $lines_ignored = ${$_[0]}{ignored_lines} or die;	# lines to be ignored, i.e. inside an '#IGNORE#' block
   my $check = ${$_[0]}{check} || "";
-  my $arg_type = ${$_[0]}{arg_type};
+  my $arg_type = ${$_[0]}{arg_type} || "";
   ref (my $ignore_args =
        ${$_[0]}{ignore_args}) eq 'ARRAY' or die;
   
@@ -774,13 +780,19 @@ sub get_atom_props {
   
   my $rule = $+{rule} || "";
   my $name = $+{name} || "";
-  my $full_version = $+{full_version} || "";
-  my $version = $+{version} || "";
+  my $full_version = $+{full_version};
+  $full_version = "" unless length $full_version;
+  my $version = $+{version};
+  $version = "" unless length $version;
   my $release = $+{release} || "";
-  my $patch = $+{patch} || "";
-  my $revision = $+{revision} || "";
-  my $slot = $+{slot} || "";
-  my $subslot = $+{subslot} || "";
+  my $patch = $+{patch};
+  $patch = "" unless length $patch;
+  my $revision = $+{revision};
+  $revision = "" unless length $revision;
+  my $slot = $+{slot};
+  $slot = "" unless length $slot;
+  my $subslot = $+{subslot};
+  $subslot = "" unless length $subslot;
   my $repository = $+{repository} || "";
   my $args = [split (' ', $+{args} || "")];
   
@@ -857,7 +869,7 @@ sub is_installed {
   
   my @matching_versions;
   for ( @installed_versions) {
-    my ($installed_name, $installed_version) = @{&get_atom_props($_)}{"name", "version"};
+    my ($installed_name, $installed_version) = @{&get_atom_props($_)}{"name", "full_version"};
     my $installed_repository = "";
     
     open my $slotfile_fh, '<', catfile ( $db_dir, $_, "SLOT" ) or die;
@@ -886,7 +898,7 @@ sub is_installed {
     
     # check that version installed matches that listed
     if ( length $version ) {
-      printdbg "comparing versions";
+      printdbg "comparing versions:";
       unless ( version_or_slot_matches ({
 					 listed		=> $version,
 					 installed	=> $installed_version,
@@ -985,7 +997,7 @@ sub get_valid_atom_args {
   my $atom = ${$_[0]}{atom} or die;
   my $check = ${$_[0]}{check} || "";
   ref (my $args = ${$_[0]}{args}) eq 'ARRAY' or die;
-  my $arg_type = ${$_[0]}{arg_type};
+  my $arg_type = ${$_[0]}{arg_type} || "";
   ref (my $ignore_args = ${$_[0]}{ignore_args}) eq 'ARRAY' or die;
   
   unless ( $arg_type ) {
@@ -1081,7 +1093,7 @@ sub version_or_slot_matches {
   printdbg "checking precedence of versions";
   $listed =~ s/\.?\*.*//;
   my $lower = get_lower_version $listed, $installed;
-  die unless $lower;
+  die unless length $lower;
   
   return $match if $rule =~ m/>/ && $listed eq $lower;
   return $match if $rule =~ m/</ && $installed eq $lower;
@@ -1177,18 +1189,25 @@ sub get_lower_version {
     return $pkg1 if $rel1_precedence < $rel2_precedence;
     return $pkg2 if $rel2_precedence < $rel1_precedence;
     
-    printdbg "release number comparison";
     my $release1_num = $$v1{release} =~ s/^[a-z]+//r;
     my $release2_num = $$v2{release} =~ s/^[a-z]+//r;
     printdbg "release comparison part2: $release1_num, $release2_num";
-    
-    return $pkg1 if $release1_num < $release2_num;
-    return $pkg2 if $release2_num < $release1_num;
+
+    if ( length $release1_num || length $release2_num ) {
+      
+      # any release number is a higher version than none
+      return $pkg1 if length $release2_num && ! length $release1_num;
+      return $pkg2 if length $release1_num && ! length $release2_num;
+      
+      return $pkg1 if $release1_num < $release2_num;
+      return $pkg2 if $release2_num < $release1_num;
+    }
   }
   
   # if they're equal, compare patch numbers
-  {
+  if ( length $$v1{patch} || length $$v2{patch} ) {
     printdbg "patch comparison part1: $$v1{patch}, $$v2{patch}";
+    
     # any patch is a higher version than none
     return $pkg1 if length $$v2{patch} && ! length $$v1{patch};
     return $pkg2 if length $$v1{patch} && ! length $$v2{patch};
@@ -1199,8 +1218,13 @@ sub get_lower_version {
   }
   
   # finally, if they're equal, compare revision numbers
-  {
+  if ( length $$v1{revision} || length $$v2{revision} ) {
     printdbg "revision number comparison: $$v1{revision} vs $$v2{revision}";
+    
+    # any revision is a higher version than none
+    return $pkg1 if length $$v2{revision} && ! length $$v1{revision};
+    return $pkg2 if length $$v1{revision} && ! length $$v2{revision};
+    
     return $pkg1 if $$v1{revision} < $$v2{revision};
     return $pkg2 if $$v2{revision} < $$v1{revision};
   }
