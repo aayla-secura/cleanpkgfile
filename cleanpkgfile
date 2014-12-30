@@ -78,7 +78,7 @@ my $do_backup = '';
 my $force_overwrite = 0;
 my $keep_nonmatching = 0;
 my $check = '';
-my $ignore_use_or_keyword = '';
+my @ignore_use_or_keyword;
 my $tmp_dir = '/tmp/';
 my $help_str = "See $prog_name --help";
 my $left_column_width = 22;	# width of left column
@@ -188,7 +188,7 @@ my $right_column_width = 85;	# width of right column
 				    "keywords to ignore during check (if checking is to be done). " .
 				    "These will NOT be removed even if they are not listed " .
 				    "in any of the installed versions matching the package.",
-				    variable		=> \$ignore_use_or_keyword
+				    variable		=> \@ignore_use_or_keyword
 				   },
 	      tmp_dir		=> {
 				    long		=> "tmp-dir",
@@ -215,6 +215,8 @@ my $right_column_width = 85;	# width of right column
 # make sure filename (and no other arguments after option processing) has been specified
 die "Please specify at least one filename.\n$help_str\n" unless @ARGV;
 printdbg "files: @ARGV";
+
+@ignore_use_or_keyword = split /,/, join(',', @ignore_use_or_keyword);
 
 $verbose = 0 if $quiet;
 $check = '' if $check eq 'none';
@@ -258,7 +260,7 @@ for my $path ( @ARGV ) {
   printdbg "tmp_dir: $tmp_dir", "path: $path", "verbose: $verbose",
     "quiet: $quiet", "batch: $batch", "do_backup: $do_backup",
       "force_overwrite: $force_overwrite", "keep_nonmatching: $keep_nonmatching",
-	"check: $check", "ignore_use_or_keyword: $ignore_use_or_keyword", "\n";
+	"check: $check", "ignore_use_or_keyword: @ignore_use_or_keyword", "\n";
   
   unless ( -e $path ) {
     print STDERR color ('bold red');
@@ -314,8 +316,7 @@ for my $path ( @ARGV ) {
 		   check			=> $check,
 		   arg_type		=> $arg_type,
 		   ignore_args		=> ( $check =~ m/^(use|keyword)$/ ?
-					     [split /,\s*/, $ignore_use_or_keyword] :
-					     [] )
+					     \@ignore_use_or_keyword : [] )
 		  });
   }
 }

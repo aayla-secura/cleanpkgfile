@@ -19,7 +19,7 @@
 
 # Control whether to prompt before overwrite or not (default). If the backup option is not
 # set, by default a backup will be done when force-overwrite is set to true, otherwise - not.
-# force-overwrite = 1
+#force-overwrite = 1
 
 # Control whether backups are done - if set at all, the value will be used in all cases.
 # If you wish this to be determined by force-overwrite (default), leave it blank/commented.
