@@ -29,6 +29,12 @@
 # entries with no matching version installed
 #keep-non-matching = 1
 
+# Control whether to sort the file alphabetically (default)
+# Even when sorting, any consecutive comments of the form '# required by' are grouped
+# with the package atom immediately following them. Note that disabling sorting
+# also disables joining of entries referring to the same [prefix]package[-version].
+#keep-order = 1
+
 # Specify the type of the package atom's arguments
 # It may be one of 'use', 'keywords', 'env', 'guess' or 'none'
 # Default is 'none' (no checking).

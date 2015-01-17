@@ -77,6 +77,7 @@ my $batch = 0;
 my $do_backup = '';
 my $force_overwrite = 0;
 my $keep_nonmatching = 0;
+my $keep_order = 0;
 my $check = '';
 my @ignore_use_or_keyword;
 my $tmp_dir = '/tmp/';
@@ -91,7 +92,7 @@ my $right_column_width = 85;	# width of right column
 	      help		=> {
 				    long		=> "help",
 				    short		=> "h",
-				    argument		=> "",
+				    type		=> "",
 				    allowed_arguments	=> [],
 				    description		=> "Print this help message and exit.",
 				    variable		=> sub { usage \%options; }
@@ -99,7 +100,7 @@ my $right_column_width = 85;	# width of right column
 	      debug		=> {
 				    long		=> "debug",
 				    short		=> "D",
-				    argument		=> "",
+				    type		=> "",
 				    allowed_arguments	=> [],
 				    description		=> "Makes a lot of noise on STDOUT. " .
 				    "It also disables prompting the user, so you can pipe the output. " .
@@ -109,7 +110,7 @@ my $right_column_width = 85;	# width of right column
 	      verbose		=> {
 				    long		=> "verbose",
 				    short		=> "v",
-				    argument		=> "!",
+				    type		=> "!",
 				    allowed_arguments	=> [],
 				    description		=> "Print information about every entry " .
 				    "being processed (off by default). Disable with --no-verbose.",
@@ -118,7 +119,7 @@ my $right_column_width = 85;	# width of right column
 	      quiet		=> {
 				    long		=> "quiet",
 				    short		=> "q",
-				    argument		=> "!",
+				    type		=> "!",
 				    allowed_arguments	=> [],
 				    description		=> "Do not produce any output - only " .
 				    "prompts (off by default). Takes precedence over --verbose. " .
@@ -128,7 +129,7 @@ my $right_column_width = 85;	# width of right column
 	      batch		=> {
 				    long		=> "batch",
 				    short		=> "B",
-				    argument		=> "!",
+				    type		=> "!",
 				    allowed_arguments	=> [],
 				    description		=> "Do not prompt the user - choose " .
 				    "default action and force overwrite (off by default). " .
@@ -138,7 +139,7 @@ my $right_column_width = 85;	# width of right column
 	      backup		=> {
 				    long		=> "backup",
 				    short		=> "b",
-				    argument		=> "!",
+				    type		=> "!",
 				    allowed_arguments	=> [],
 				    description		=> "Backup original files before " .
 				    "overwriting (off by default unless --force-overwrite is set). " .
@@ -148,7 +149,7 @@ my $right_column_width = 85;	# width of right column
 	      force_overwrite	=> {
 				    long		=> "force-overwrite",
 				    short		=> "f",
-				    argument		=> "!",
+				    type		=> "!",
 				    allowed_arguments	=> [],
 				    description		=> "Do not prompt to save changes - backup " .
 				    "the original file (unless --no-backup is set) and write changes " .
@@ -158,17 +159,30 @@ my $right_column_width = 85;	# width of right column
 	      keep_nonmatching	=> {
 				    long		=> "keep-non-matching|keep-nonmatching",
 				    short		=> "k",
-				    argument		=> "!",
+				    type		=> "!",
 				    allowed_arguments	=> [],
 				    description		=> "Do not remove entries with no " .
 				    "matching versions installed (off by default). " .
 				    "Disable with --no-keep-non-matching|--no-keep-nonmatching.",
 				    variable		=> \$keep_nonmatching
 				   },
+	      keep_order	=> {
+				    long		=> "keep-order",
+				    short		=> "o",
+				    type		=> "!",
+				    allowed_arguments	=> [],
+				    description		=> "Do not sort the file alphabetically " .
+				    "(off by default). This also disables joining of entries referring " .
+				    "to the same [prefix]package[-version]. Note that even when sorting, " .
+				    "any consecutive comments of the form '# required by' are grouped " .
+				    "with the package atom immediately following them. " .
+				    "Disable with --no-keep-order.",
+				    variable		=> \$keep_order
+				   },
 	      check		=> {
 				    long		=> "check",
 				    short		=> "c",
-				    argument		=> "=s",
+				    type		=> "=s",
 				    allowed_arguments	=> ['use', 'keyword', 'env', 'guess', 'none', ''],
 				    description		=> "Specify the type of the package " .
 				    "atom's arguments - 'use', 'keyword', 'env', 'guess' or " .
@@ -182,7 +196,7 @@ my $right_column_width = 85;	# width of right column
 	      ignore_use_or_keyword	=> {
 				    long		=> "ignore-use-or-keyword",
 				    short		=> "i",
-				    argument		=> "=s",
+				    type		=> "=s",
 				    allowed_arguments	=> [],
 				    description		=> "A coma separated list of USE flags or " .
 				    "keywords to ignore during check (if checking is to be done). " .
@@ -193,7 +207,7 @@ my $right_column_width = 85;	# width of right column
 	      tmp_dir		=> {
 				    long		=> "tmp-dir",
 				    short		=> "d",
-				    argument		=> "=s",
+				    type		=> "=s",
 				    allowed_arguments	=> [],
 				    description		=> "Directory in which the temporary " .
 				    "file will be stored before overwrite (default is /tmp). " .
@@ -384,7 +398,7 @@ sub process_cmd {
   for my $opt ( sort keys %$options ) {
     my $opt_desc = $$options{$opt};
     my $key = $$opt_desc{'long'} . ( $$opt_desc{'short'} ? "|$$opt_desc{'short'}" : "" ) .
-      $$opt_desc{'argument'};
+      $$opt_desc{'type'};
     $options{$key} = $$opt_desc{'variable'}
   }
   
@@ -503,7 +517,8 @@ sub file_preprocess {
   my $lines = ${$_[0]}{processed_lines} or die;		# lines to be processed, default
   my $lines_ignored = ${$_[0]}{ignored_lines} or die;	# lines to be ignored, i.e. inside an '#IGNORE#' block
   
-  my @lines_preprocessed;				# lines to be preprocessed here, default
+  my %lines_preprocessed;				# lines to be preprocessed here, default
+  my @tmp_comments;					# 'required by' comments for each atom
   my $ignore = 0;					# true if inside an '#IGNORE#' block
   
   # open file for reading
@@ -527,48 +542,68 @@ sub file_preprocess {
     
     if ( $ignore ) {
       push @$lines_ignored, $_;
-    } else {
-      push @lines_preprocessed, $_;
+    }
+    else {
+      # no need to do any further processing if sorting is disabled
+      if ( $keep_order ) {
+	push @$lines, $_;
+	next;
+      }
+      
+      if ( $_ =~ m/^\s*#\s*required/ ) {
+	push @tmp_comments, $_;
+      } else {
+	$lines_preprocessed{$_} = [@tmp_comments];	# hash key for the package
+	@tmp_comments = ();
+      }
     }
   }
   close $file_fh;
   
-  # sort the original file ignoring any lines between matching '#IGNORE#' lines (saving them for later)
-  for ( sort {($a =~ s/^\s*(?:#\s*|[<>=~!]+)//r)
-		cmp ($b =~ s/^\s*(?:#\s*|[<>=~!]+)//r)}
-	map { chomp; $_ } @lines_preprocessed ) {
-    printdbg "\n", "line sort: $_";
+  # unless sorting is disabled, sort the original file ignoring any lines
+  # between matching '#IGNORE#' lines (saving them for later)
+  unless ( $keep_order ) {
+    for ( sort {($a =~ s/^\s*(?:#\s*|[<>=~!]+)//r)
+		  cmp ($b =~ s/^\s*(?:#\s*|[<>=~!]+)//r)}
+	  keys %lines_preprocessed ) {
+      printdbg "\n", "package sort: $_";
     
-    $_ =~ s/^\s+|\s+$//g;  # remove leading, trailing and extra spaces/tabs
+      $_ =~ s/^\s+|\s+$//g; # remove leading, trailing and extra spaces/tabs
     
-    # if it's the first element, or it is a comment, or it is a glob, store it and continue
-    if ( ! @$lines || $_ =~ m/^#/ ) {
-      printdbg "first or comment";
-      push @$lines, $_ ;
-      next;
+      # if it's the first element, or it is a comment,
+      # or it has a 'required by' comment, store it and continue
+      if ( ! @$lines || $_ =~ m/^#/ || @{$lines_preprocessed{$_}} ) {
+	printdbg "first or comment or is required by...";
+	push @$lines, @{$lines_preprocessed{$_}};
+	push @$lines, $_ ;
+	next;
+      }
+    
+      # otherwise, compare it with previous element, unless that was a comment
+      # or had a 'required by' comment
+      if ( $$lines[-1] =~ m/^#/ || @{$lines_preprocessed{$$lines[-1]}} ) {
+	printdbg "previous line was a comment or is required by...";
+	push @$lines, $_;
+	next;
+      }
+    
+      ## join them if they refer to the same [prefix]package[-version]
+      my ($current, @args) = split /\s+/, $_ || [""];
+      my $previous = (split /\s+/, $$lines[-1])[0] || "";
+      printdbg "current: $current";
+      printdbg "previous: $previous";
+    
+      if ( $previous eq $current) {
+	delete $lines_preprocessed{$$lines[-1]};
+	$$lines[-1] .= " @args" if @args;
+	$lines_preprocessed{$$lines[-1]} = [];
+	printdbg "joining as $$lines[-1]";
+	next;
+      }
+    
+      ## otherwise just store it
+      push @$lines, $_;
     }
-    
-    # otherwise, compare it with previous element, unless it was a comment
-    if ( $$lines[-1] =~ m/^#/ ) {
-      printdbg "previous line was a comment";
-      push @$lines, $_ ;
-      next;
-    }
-    
-    ## join them if they refer to the same [prefix]package[-version]
-    my ($current, @args) = split /\s+/, $_ || [""];
-    my $previous = (split /\s+/, $$lines[-1])[0] || "";
-    printdbg "current: $current";
-    printdbg "previous: $previous";
-    
-    if ( $previous eq $current) {
-      $$lines[-1] .= " @args" if @args;
-      printdbg "joining as $$lines[-1]";
-      next;
-    }
-    
-    ## otherwise just store it
-    push @$lines, $_;
   }
   
   printdbg "\n", "Final lines to be further processed:";
@@ -758,6 +793,7 @@ sub file_process {
   my $overwrite;
   
   if ( $force_overwrite ) { $overwrite = 'y'; }
+  elsif ( $batch ) { $overwrite = 'n'; }
   else {
     $overwrite = prompt ({
 			  prompt		=> "Changes have been saved to $filename_tmp. " .
@@ -803,7 +839,7 @@ sub get_atom_props {
 		(?<slot_glob> (?> [a-z0-9_] [a-z0-9._-]* \*? | \* ) ) )
 	      
 	      ^(?<rule> \!? [<>]? [=~]? )				# atom prefix
-	      (?<name> [a-z0-9-*]+/[a-zA-Z0-9-_*]+? )			# category/name
+	      (?<name> [a-z0-9*-]+/[a-zA-Z0-9+_*-]+? )			# category/name
 	      (?> - (?<full_version>					# full version
 		  (?<version> (?&version_glob) )			# version
 		  (?> _ (?<release> (?: alpha | beta | pre | rc ) \d* ) )?  	# release

@@ -67,6 +67,12 @@ COMMAND LINE OPTIONS
            -k  Do not remove entries with no matching versions installed (off by default). Disable with
                --no-keep-non-matching|--no-keep-nonmatching.
 
+--keep-order
+           -o  Do not sort the file alphabetically (off by default). This also disables joining of entries
+               referring to the same [prefix]package[-version]. Note that even when sorting, any
+               consecutive comments of the form '# required by' are grouped with the package atom
+               immediately following them. Disable with --no-keep-order.
+
 --quiet    -q  Do not produce any output - only prompts (off by default). Takes precedence over --verbose.
                Disable with --no-quiet.
 
@@ -108,7 +114,7 @@ sys-libs/e2fsprogs-libs abi_x86_32
 
 #IGNORE#
 
-Alternatively, you man exclude certain USE flags or keywords from being processed
+Alternatively, you can exclude certain USE flags or keywords from being processed
 (and hence removed if found to be invalid) with the --ignore-use-or-keyword option:
   cleanpkgfile -cguess -iabi_x86_32,minimal package.use
 
@@ -120,3 +126,7 @@ use --force-overwrite and --backup:
 __________________________________________________________________________________________________
 To disable prompts and output, use --batch and --quiet:
   cleanpkgfile -qB /etc/portage/package.*
+
+__________________________________________________________________________________________________
+Example for a cron job:
+cleanpkgfile --check=guess --batch --no-backup package.use package.accept_keywords

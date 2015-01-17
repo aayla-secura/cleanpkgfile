@@ -82,6 +82,7 @@ _cleanpkgfile () {
     {'(--help)-h','(-h)--help'}'[Show usage and exit]' \
     {'*-i+','*--ignore-use-or-keyword='}'[Ignore list of USE flags/keywords]:USE flags:_complete_useflags' \
     {'(--keep-non-matching --keep-nonmatching)-k','(-k --keep-nonmatching)--keep-non-matching'}'[Do not remove entries with no installed versions]' \
+    {'(--keep-order)-o','(-o)--keep-order'}'[Do not sort the file alphabetically]' \
     {'(--quiet --verbose -v)-q','(-q --verbose -v)--quiet'}'[Only prompt, do not produce other output]' \
     {'(--tmp-dir)-d+','(-d)--tmp-dir='}'[Set temporary directory]:temporary directory:_files -/' \
     {'(--verbose --quiet -q)-v','(-v --quiet -q)--verbose'}'[Print information about every entry]' \
